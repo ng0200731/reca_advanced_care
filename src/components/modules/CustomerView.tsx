@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState, useCallback } from "react";
+import { useEffect, useState } from "react";
 
 type Member = {
   id: string;
@@ -26,25 +26,29 @@ export default function CustomerView() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
   const [editing, setEditing] = useState<Customer | null>(null);
-
-  const fetchCustomers = useCallback(async () => {
-    setLoading(true);
-    setError("");
-    try {
-      const res = await fetch("/api/customers");
-      if (!res.ok) throw new Error("Failed to fetch");
-      const data = await res.json();
-      setCustomers(data);
-    } catch {
-      setError("Failed to load customers");
-    } finally {
-      setLoading(false);
-    }
-  }, []);
+  const [refreshKey, setRefreshKey] = useState(0);
 
   useEffect(() => {
+    let cancelled = false;
+    const fetchCustomers = async () => {
+      setLoading(true);
+      setError("");
+      try {
+        const res = await fetch("/api/customers");
+        if (!res.ok) throw new Error("Failed to fetch");
+        const data = await res.json();
+        if (!cancelled) setCustomers(data);
+      } catch {
+        if (!cancelled) setError("Failed to load customers");
+      } finally {
+        if (!cancelled) setLoading(false);
+      }
+    };
     fetchCustomers();
-  }, [fetchCustomers]);
+    return () => {
+      cancelled = true;
+    };
+  }, [refreshKey]);
 
   const deleteCustomer = async (id: string) => {
     if (!confirm("Delete this customer and all members?")) return;
@@ -88,7 +92,7 @@ export default function CustomerView() {
           <p className="text-sm text-[var(--foreground)]/50 mt-1">View, edit and delete customers</p>
         </div>
         <button
-          onClick={fetchCustomers}
+          onClick={() => setRefreshKey((k) => k + 1)}
           disabled={loading}
           className="px-4 py-2 bg-[var(--primary)] text-white rounded-lg text-sm font-semibold hover:bg-[var(--primary)]/90 disabled:opacity-50 transition-all cursor-pointer"
         >

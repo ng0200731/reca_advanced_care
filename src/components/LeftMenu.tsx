@@ -1,5 +1,6 @@
 "use client";
 
+import { useEffect } from "react";
 import { useLayoutStore } from "@/store/layoutStore";
 import type { ViewPanel } from "@/lib/types";
 
@@ -35,6 +36,61 @@ function MenuChevron({ expanded }: { expanded: boolean }) {
   );
 }
 
+const topSections: MenuSection[] = [
+  {
+    key: "customer",
+    label: "Customer",
+    icon: (
+      <svg className="w-[18px] h-[18px]" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.75}>
+        <path strokeLinecap="round" strokeLinejoin="round" d="M19 21V5a2 2 0 00-2-2H7a2 2 0 00-2 2v16m14 0h2m-2 0h-5m-9 0H3m2 0h5M9 7h1m-1 4h1m4-4h1m-1 4h1m-5 10v-5a1 1 0 011-1h2a1 1 0 011 1v5" />
+      </svg>
+    ),
+    items: [
+      { id: "customer-create", label: "Create" },
+      { id: "customer-view", label: "View" },
+    ],
+  },
+  {
+    key: "layout",
+    label: "Layout",
+    icon: (
+      <svg className="w-[18px] h-[18px]" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.75}>
+        <path strokeLinecap="round" strokeLinejoin="round" d="M7 21a4 4 0 01-4-4V5a2 2 0 012-2h4a2 2 0 012 2v12a4 4 0 01-4 4zm0 0h12a2 2 0 002-2v-4a2 2 0 00-2-2h-2.343M11 7.343l1.657-1.657a2 2 0 012.828 0l2.829 2.829a2 2 0 010 2.828l-8.486 8.485M7 17h.01" />
+      </svg>
+    ),
+    items: [
+      { id: "layout-create", label: "Create" },
+      { id: "layout-view", label: "View" },
+    ],
+  },
+  {
+    key: "translation",
+    label: "Translation",
+    icon: (
+      <svg className="w-[18px] h-[18px]" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.75}>
+        <path strokeLinecap="round" strokeLinejoin="round" d="M3 5h12M9 3v2m1.5 2.5l-2 7m-2 0h5m-5 0l-1 4m13-4h2m-2 0l-2 7m-2 0h5m-5 0l-1 4" />
+      </svg>
+    ),
+    items: [
+      { id: "translation-create", label: "Create" },
+      { id: "translation-view", label: "View" },
+    ],
+  },
+  {
+    key: "font",
+    label: "Font",
+    icon: (
+      <svg className="w-[18px] h-[18px]" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.75}>
+        <path strokeLinecap="round" strokeLinejoin="round" d="M4 6h16M4 12h16M4 18h7" />
+      </svg>
+    ),
+    items: [
+      { id: "font-create", label: "Upload" },
+      { id: "font-view", label: "View" },
+    ],
+  },
+];
+
 export default function LeftMenu({ onNavigate }: { onNavigate?: () => void }) {
   const step = useLayoutStore((s) => s.step);
   const setStep = useLayoutStore((s) => s.setStep);
@@ -64,60 +120,13 @@ export default function LeftMenu({ onNavigate }: { onNavigate?: () => void }) {
     setMenuExpanded(key, !menuExpanded[key]);
   };
 
-  const topSections: MenuSection[] = [
-    {
-      key: "customer",
-      label: "Customer",
-      icon: (
-        <svg className="w-[18px] h-[18px]" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.75}>
-          <path strokeLinecap="round" strokeLinejoin="round" d="M19 21V5a2 2 0 00-2-2H7a2 2 0 00-2 2v16m14 0h2m-2 0h-5m-9 0H3m2 0h5M9 7h1m-1 4h1m4-4h1m-1 4h1m-5 10v-5a1 1 0 011-1h2a1 1 0 011 1v5" />
-        </svg>
-      ),
-      items: [
-        { id: "customer-create", label: "Create" },
-        { id: "customer-view", label: "View" },
-      ],
-    },
-    {
-      key: "layout",
-      label: "Layout",
-      icon: (
-        <svg className="w-[18px] h-[18px]" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.75}>
-          <path strokeLinecap="round" strokeLinejoin="round" d="M7 21a4 4 0 01-4-4V5a2 2 0 012-2h4a2 2 0 012 2v12a4 4 0 01-4 4zm0 0h12a2 2 0 002-2v-4a2 2 0 00-2-2h-2.343M11 7.343l1.657-1.657a2 2 0 012.828 0l2.829 2.829a2 2 0 010 2.828l-8.486 8.485M7 17h.01" />
-        </svg>
-      ),
-      items: [
-        { id: "layout-create", label: "Create" },
-        { id: "layout-view", label: "View" },
-      ],
-    },
-    {
-      key: "translation",
-      label: "Translation",
-      icon: (
-        <svg className="w-[18px] h-[18px]" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.75}>
-          <path strokeLinecap="round" strokeLinejoin="round" d="M3 5h12M9 3v2m1.5 2.5l-2 7m-2 0h5m-5 0l-1 4m13-4h2m-2 0l-2 7m-2 0h5m-5 0l-1 4" />
-        </svg>
-      ),
-      items: [
-        { id: "translation-create", label: "Create" },
-        { id: "translation-view", label: "View" },
-      ],
-    },
-    {
-      key: "font",
-      label: "Font",
-      icon: (
-        <svg className="w-[18px] h-[18px]" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.75}>
-          <path strokeLinecap="round" strokeLinejoin="round" d="M4 6h16M4 12h16M4 18h7" />
-        </svg>
-      ),
-      items: [
-        { id: "font-create", label: "Upload" },
-        { id: "font-view", label: "View" },
-      ],
-    },
-  ];
+  useEffect(() => {
+    topSections.forEach((section) => {
+      if (section.items.some((item) => item.id === viewPanel)) {
+        setMenuExpanded(section.key, true);
+      }
+    });
+  }, [viewPanel, setMenuExpanded]);
 
   return (
     <div className="w-full h-full flex flex-col bg-white border-r border-[var(--border)] overflow-y-auto">

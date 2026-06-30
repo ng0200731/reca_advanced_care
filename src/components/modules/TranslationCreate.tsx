@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState, useCallback } from "react";
+import { useEffect, useState } from "react";
 import * as XLSX from "xlsx";
 
 type Customer = {
@@ -17,18 +17,21 @@ export default function TranslationCreate() {
   const [message, setMessage] = useState("");
   const [saving, setSaving] = useState(false);
 
-  const fetchCustomers = useCallback(async () => {
-    try {
-      const res = await fetch("/api/customers");
-      if (!res.ok) throw new Error("Failed");
-      const data = await res.json();
-      setCustomers(data);
-    } catch {}
-  }, []);
-
   useEffect(() => {
+    let cancelled = false;
+    const fetchCustomers = async () => {
+      try {
+        const res = await fetch("/api/customers");
+        if (!res.ok) throw new Error("Failed");
+        const data = await res.json();
+        if (!cancelled) setCustomers(data);
+      } catch {}
+    };
     fetchCustomers();
-  }, [fetchCustomers]);
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   const handleFileUpload = (file: File | null) => {
     if (!file) return;
