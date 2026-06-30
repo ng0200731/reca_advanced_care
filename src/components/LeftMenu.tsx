@@ -103,6 +103,9 @@ export default function LeftMenu({ onNavigate }: { onNavigate?: () => void }) {
 
   const stepOrder = steps.map((s) => s.id);
   const currentIdx = stepOrder.indexOf(step);
+  const activeSectionKey = topSections.find((s) =>
+    s.items.some((item) => item.id === viewPanel)
+  )?.key;
 
   const isActive = (id: ViewPanel) => viewPanel === id;
 
@@ -204,7 +207,7 @@ export default function LeftMenu({ onNavigate }: { onNavigate?: () => void }) {
           })}
         </div>
 
-        {viewPanel === "layout-create" && (
+        {activeSectionKey === "layout" && (
           <>
             <div className="mb-2 px-3 mt-6">
               <span className="text-[11px] font-semibold text-[var(--foreground)]/40 uppercase tracking-wider">
