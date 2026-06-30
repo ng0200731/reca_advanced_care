@@ -57,7 +57,7 @@ export default function LabelCanvas({
     <svg
       width={canvas.cw}
       height={canvas.ch}
-      viewBox={`0 0 ${canvas.cw} ${canvas.ch}`}
+      viewBox={`-1 -1 ${canvas.cw + 2} ${canvas.ch + 2}`}
       className="bg-white shadow-[var(--shadow-md)] border border-[var(--border)] rounded-sm"
     >
       <rect x="0" y="0" width={canvas.cw} height={canvas.ch} fill="white" stroke="#0F172A" strokeWidth={1} />
