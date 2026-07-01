@@ -124,6 +124,81 @@ export function generateSvgLabel(
   return parts.join("\n");
 }
 
+export function generateCombinedSvgString(
+  widthMm: number,
+  heightMm: number,
+  orientation: "portrait" | "landscape",
+  viewMode: "side-by-side" | "top-bottom",
+  isBackFlipped: boolean,
+  foldOrientation?: "vertical" | "horizontal",
+  foldDistanceMm?: number,
+  padding?: PaddingValues,
+  paddingRegion2?: PaddingValues,
+  showPadding: boolean = true,
+  showFold: boolean = false,
+  foldMidForm: boolean = false
+): string {
+  const { w, h } = getDisplayedDimensions(widthMm, heightMm, orientation);
+  const gapMm = 10;
+  const marginMm = 8;
+  const isSideBySide = viewMode === "side-by-side";
+  const totalW = isSideBySide ? w * 2 + gapMm : w;
+  const totalH = isSideBySide ? h : h * 2 + gapMm;
+  const pageW = totalW + marginMm * 2;
+  const pageH = totalH + marginMm * 2;
+
+  const frontSvg = generateSvgLabel(
+    widthMm,
+    heightMm,
+    orientation,
+    foldOrientation,
+    foldDistanceMm,
+    padding,
+    paddingRegion2,
+    showPadding,
+    showFold,
+    true,
+    foldMidForm,
+    false,
+    { isFront: true }
+  );
+
+  const backSvg = generateSvgLabel(
+    widthMm,
+    heightMm,
+    orientation,
+    foldOrientation,
+    foldDistanceMm,
+    padding,
+    paddingRegion2,
+    showPadding,
+    showFold,
+    true,
+    foldMidForm,
+    isBackFlipped,
+    { isFront: false }
+  );
+
+  const stripSvg = (svg: string) =>
+    svg.replace(/<[?]xml[^?]*[?]>/, "").replace(/<svg[^>]*>/, "").replace(/<\/svg>/, "");
+
+  const frontX = marginMm;
+  const frontY = marginMm;
+  const backX = isSideBySide ? marginMm + w + gapMm : marginMm;
+  const backY = isSideBySide ? marginMm : marginMm + h + gapMm;
+
+  return `<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" width="${pageW}mm" height="${pageH}mm" viewBox="0 0 ${pageW} ${pageH}">
+  <rect x="0" y="0" width="${pageW}" height="${pageH}" fill="white"/>
+  <g transform="translate(${frontX}, ${frontY})">
+    ${stripSvg(frontSvg)}
+  </g>
+  <g transform="translate(${backX}, ${backY})">
+    ${stripSvg(backSvg)}
+  </g>
+</svg>`;
+}
+
 const A_SERIES_MM = [
   { name: "A4", w: 210, h: 297 },
   { name: "A3", w: 297, h: 420 },
@@ -245,22 +320,43 @@ function drawLabelOnPdf(
   }
 }
 
-export function generateCombinedPdfLabel(
+export async function generateCombinedPdfLabel(
   widthMm: number,
   heightMm: number,
   orientation: "portrait" | "landscape",
+  viewMode: "side-by-side" | "top-bottom",
+  isBackFlipped: boolean,
   foldOrientation?: "vertical" | "horizontal",
   foldDistanceMm?: number,
   padding?: PaddingValues,
   paddingRegion2?: PaddingValues,
-  showPadding: boolean = false,
+  showPadding: boolean = true,
   showFold: boolean = false,
   foldMidForm: boolean = false
-): ArrayBuffer {
+): Promise<ArrayBuffer> {
   const { w, h } = getDisplayedDimensions(widthMm, heightMm, orientation);
-  const gap = 10;
-  const pageW = w * 2 + gap;
-  const pageH = h;
+  const gapMm = 10;
+  const marginMm = 8;
+  const isSideBySide = viewMode === "side-by-side";
+  const totalW = isSideBySide ? w * 2 + gapMm : w;
+  const totalH = isSideBySide ? h : h * 2 + gapMm;
+  const pageW = totalW + marginMm * 2;
+  const pageH = totalH + marginMm * 2;
+
+  const combinedSvg = generateCombinedSvgString(
+    widthMm,
+    heightMm,
+    orientation,
+    viewMode,
+    isBackFlipped,
+    foldOrientation,
+    foldDistanceMm,
+    padding,
+    paddingRegion2,
+    showPadding,
+    showFold,
+    foldMidForm
+  );
 
   const doc = new jsPDF({
     orientation: pageW > pageH ? "landscape" : "portrait",
@@ -268,10 +364,39 @@ export function generateCombinedPdfLabel(
     format: [pageW, pageH],
   });
 
-  drawLabelOnPdf(doc, 0, 0, w, h, foldOrientation, foldDistanceMm, padding, paddingRegion2, showPadding, showFold, foldMidForm);
-  drawLabelOnPdf(doc, w + gap, 0, w, h, foldOrientation, foldDistanceMm, padding, paddingRegion2, showPadding, showFold, foldMidForm);
+  const svgBlob = new Blob([combinedSvg], { type: "image/svg+xml;charset=utf-8" });
+  const url = URL.createObjectURL(svgBlob);
 
-  return doc.output("arraybuffer") as ArrayBuffer;
+  try {
+    const img = await new Promise<HTMLImageElement>((resolve, reject) => {
+      const image = new Image();
+      image.onload = () => resolve(image);
+      image.onerror = reject;
+      image.src = url;
+    });
+
+    const pngDataUrl = svgToPngDataUrl(img, pageW, pageH);
+    doc.addImage(pngDataUrl, "PNG", 0, 0, pageW, pageH);
+    return doc.output("arraybuffer") as ArrayBuffer;
+  } finally {
+    URL.revokeObjectURL(url);
+  }
+}
+
+function svgToPngDataUrl(
+  img: HTMLImageElement,
+  widthMm: number,
+  heightMm: number,
+  dpi: number = 300
+): string {
+  const canvas = document.createElement("canvas");
+  const scale = dpi / 25.4;
+  canvas.width = Math.max(1, Math.round(widthMm * scale));
+  canvas.height = Math.max(1, Math.round(heightMm * scale));
+  const ctx = canvas.getContext("2d");
+  if (!ctx) throw new Error("Failed to create canvas context");
+  ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+  return canvas.toDataURL("image/png");
 }
 
 export async function generateProductionPdfLabel(
@@ -359,7 +484,8 @@ export async function generateProductionPdfLabel(
       image.src = url;
     });
 
-    doc.addImage(img, "PNG", 0, 0, artboard.w, artboard.h);
+    const pngDataUrl = svgToPngDataUrl(img, artboard.w, artboard.h);
+    doc.addImage(pngDataUrl, "PNG", 0, 0, artboard.w, artboard.h);
     return doc.output("arraybuffer") as ArrayBuffer;
   } finally {
     URL.revokeObjectURL(url);

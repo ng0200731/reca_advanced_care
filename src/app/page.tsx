@@ -3,6 +3,7 @@
 import { useEffect, useCallback, useState } from "react";
 import LeftMenu from "@/components/LeftMenu";
 import StepRenderer from "@/components/StepRenderer";
+import StepIndicator from "@/components/StepIndicator";
 import CustomerCreate from "@/components/modules/CustomerCreate";
 import CustomerView from "@/components/modules/CustomerView";
 import TranslationCreate from "@/components/modules/TranslationCreate";
@@ -10,38 +11,7 @@ import TranslationView from "@/components/modules/TranslationView";
 import FontCreate from "@/components/modules/FontCreate";
 import FontView from "@/components/modules/FontView";
 import { useLayoutStore } from "@/store/layoutStore";
-import { generateProductionPdfLabel } from "@/lib/utils";
-
-function generateSvgString(
-  widthMm: number,
-  heightMm: number,
-  orientation: "portrait" | "landscape",
-  isFront: boolean,
-  foldOrientation?: string,
-  foldDistanceMm?: number
-): string {
-  const w = orientation === "portrait" ? widthMm : heightMm;
-  const h = orientation === "portrait" ? heightMm : widthMm;
-
-  const label = isFront
-    ? `<text x="${w / 2}" y="${h / 2 - 4}" text-anchor="middle" font-size="4" fill="#333">CARE LABEL</text>
-<text x="${w / 2}" y="${h / 2 + 4}" text-anchor="middle" font-size="3" fill="#666">FRONT SIDE</text>`
-    : `<text x="${w / 2}" y="${h / 2}" text-anchor="middle" font-size="4" fill="#333">BACK SIDE</text>`;
-
-  let foldLine = "";
-  if (foldOrientation === "vertical" && foldDistanceMm != null) {
-    foldLine = `<line x1="${foldDistanceMm}" y1="0" x2="${foldDistanceMm}" y2="${h}" stroke="#DC2626" stroke-width="0.3" stroke-dasharray="2,2"/>`;
-  } else if (foldOrientation === "horizontal" && foldDistanceMm != null) {
-    foldLine = `<line x1="0" y1="${foldDistanceMm}" x2="${w}" y2="${foldDistanceMm}" stroke="#DC2626" stroke-width="0.3" stroke-dasharray="2,2"/>`;
-  }
-
-  return `<?xml version="1.0" encoding="UTF-8"?>
-<svg xmlns="http://www.w3.org/2000/svg" width="${w}mm" height="${h}mm" viewBox="0 0 ${w} ${h}">
-  <rect x="0" y="0" width="${w}" height="${h}" fill="white" stroke="black" stroke-width="0.3"/>
-  ${label}
-  ${foldLine}
-</svg>`;
-}
+import { generateCombinedSvgString, generateCombinedPdfLabel } from "@/lib/utils";
 
 type PaddingValues = {
   top: number;
@@ -305,6 +275,8 @@ export default function Home() {
           id: layout.id,
           name: layout.name,
           materialId: d.materialId,
+          sideType: d.sideType ?? "single",
+          edgeType: d.edgeType ?? "woven",
           widthMm: d.widthMm,
           heightMm: d.heightMm,
           orientation: d.orientation,
@@ -409,28 +381,31 @@ export default function Home() {
   const handleExport = useCallback(
     async (format: "svg" | "ai" | "pdf") => {
       const baseName = data.name || "care-label";
-      const svgFront = generateSvgString(
-        data.widthMm,
-        data.heightMm,
-        data.orientation,
-        true,
-        data.loopFoldOrientation,
+      const foldDistance =
         data.loopMidForm && data.loopFoldOrientation
           ? Math.round(
               (data.loopFoldOrientation === "vertical" ? data.widthMm : data.heightMm) / 2
             )
-          : data.loopFoldDistanceMm
-      );
+          : data.loopFoldDistanceMm;
+      const showFold = data.cuttingType === "loop";
 
       if (format === "svg") {
-        downloadBlob(svgFront, `${baseName}.svg`, "image/svg+xml");
+        const svgBoth = generateCombinedSvgString(
+          data.widthMm,
+          data.heightMm,
+          data.orientation,
+          data.viewMode,
+          data.isBackFlipped ?? false,
+          data.loopFoldOrientation,
+          foldDistance,
+          data.padding,
+          data.paddingRegion2,
+          true,
+          showFold,
+          data.loopMidForm
+        );
+        downloadBlob(svgBoth, `${baseName}.svg`, "image/svg+xml");
       } else if (format === "ai") {
-        const foldDistance =
-          data.loopMidForm && data.loopFoldOrientation
-            ? Math.round(
-                (data.loopFoldOrientation === "vertical" ? data.widthMm : data.heightMm) / 2
-              )
-            : data.loopFoldDistanceMm;
         const epsBoth = generateCombinedEpsString(
           data.widthMm,
           data.heightMm,
@@ -444,13 +419,7 @@ export default function Home() {
         );
         downloadBlob(epsBoth, `${baseName}.ai`, "application/postscript");
       } else if (format === "pdf") {
-        const foldDistance =
-          data.loopMidForm && data.loopFoldOrientation
-            ? Math.round(
-                (data.loopFoldOrientation === "vertical" ? data.widthMm : data.heightMm) / 2
-              )
-            : data.loopFoldDistanceMm;
-        const pdf = await generateProductionPdfLabel(
+        const pdf = await generateCombinedPdfLabel(
           data.widthMm,
           data.heightMm,
           data.orientation,
@@ -461,7 +430,7 @@ export default function Home() {
           data.padding,
           data.paddingRegion2,
           true,
-          data.cuttingType === "loop",
+          showFold,
           data.loopMidForm
         );
         const blob = new Blob([pdf], { type: "application/pdf" });
@@ -518,8 +487,12 @@ export default function Home() {
           </div>
         </header>
         {viewPanel === "layout-create" && (
-          <div className="max-w-3xl mx-auto p-6 lg:p-10">
-            <StepRenderer />
+          <div className="max-w-3xl mx-auto">
+            <div className="sticky top-0 z-20 bg-[var(--background)]/95 backdrop-blur-sm border-b border-[var(--border)] px-6 lg:px-10 py-4">
+              <StepIndicator />
+            </div>
+            <div className="px-6 lg:px-10 py-6">
+              <StepRenderer />
 
             <div className="mt-8 flex flex-col sm:flex-row items-stretch sm:items-center gap-3 p-4 bg-white border border-[var(--border)] rounded-xl shadow-[var(--shadow-sm)]">
               <input
@@ -560,6 +533,7 @@ export default function Home() {
               {isDirty && (
                 <span className="text-xs text-[var(--accent)] font-medium shrink-0">Unsaved changes</span>
               )}
+            </div>
             </div>
           </div>
         )}

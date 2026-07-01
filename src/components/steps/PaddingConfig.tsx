@@ -178,6 +178,7 @@ export default function PaddingConfig() {
             padding={data.padding}
             paddingRegion2={data.paddingRegion2}
             showPadding
+            showDimensions
           />
         </div>
       </div>

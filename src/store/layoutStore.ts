@@ -7,6 +7,8 @@ import type {
   Material,
   Orientation,
   CuttingType,
+  SideType,
+  EdgeType,
   LoopFoldOrientation,
   PaddingOption,
   PaddingValues,
@@ -32,6 +34,8 @@ type LayoutStore = {
   setSavedLayouts: (list: { id: string; name: string }[]) => void;
 
   setMaterialId: (id: string) => void;
+  setSideType: (t: SideType) => void;
+  setEdgeType: (t: EdgeType) => void;
   setSize: (widthMm: number, heightMm: number) => void;
   setOrientation: (o: Orientation) => void;
   setCuttingType: (t: CuttingType) => void;
@@ -53,6 +57,8 @@ type LayoutStore = {
 const initialData: LayoutData = {
   name: "",
   materialId: "",
+  sideType: "single",
+  edgeType: "woven",
   widthMm: 50,
   heightMm: 30,
   orientation: "portrait",
@@ -81,6 +87,10 @@ export const useLayoutStore = create<LayoutStore>((set) => ({
 
   setMaterialId: (materialId) =>
     set((s) => ({ data: { ...s.data, materialId }, isDirty: true })),
+  setSideType: (sideType) =>
+    set((s) => ({ data: { ...s.data, sideType }, isDirty: true })),
+  setEdgeType: (edgeType) =>
+    set((s) => ({ data: { ...s.data, edgeType }, isDirty: true })),
   setSize: (widthMm, heightMm) =>
     set((s) => ({ data: { ...s.data, widthMm, heightMm }, isDirty: true })),
   setOrientation: (orientation) =>

@@ -4,15 +4,6 @@ import { useEffect } from "react";
 import { useLayoutStore } from "@/store/layoutStore";
 import type { ViewPanel } from "@/lib/types";
 
-const steps = [
-  { id: "material", label: "Material" },
-  { id: "size", label: "Size & Orientation" },
-  { id: "cutting", label: "Cutting Type" },
-  { id: "loop-details", label: "Loop Details" },
-  { id: "padding", label: "Padding" },
-  { id: "final", label: "Final View" },
-] as const;
-
 type MenuSection = {
   key: string;
   label: string;
@@ -92,30 +83,16 @@ const topSections: MenuSection[] = [
 ];
 
 export default function LeftMenu({ onNavigate }: { onNavigate?: () => void }) {
-  const step = useLayoutStore((s) => s.step);
-  const setStep = useLayoutStore((s) => s.setStep);
   const viewPanel = useLayoutStore((s) => s.viewPanel);
   const setViewPanel = useLayoutStore((s) => s.setViewPanel);
   const menuExpanded = useLayoutStore((s) => s.menuExpanded);
   const setMenuExpanded = useLayoutStore((s) => s.setMenuExpanded);
-  const data = useLayoutStore((s) => s.data);
   const savedLayouts = useLayoutStore((s) => s.savedLayouts);
-
-  const stepOrder = steps.map((s) => s.id);
-  const currentIdx = stepOrder.indexOf(step);
-  const activeSectionKey = topSections.find((s) =>
-    s.items.some((item) => item.id === viewPanel)
-  )?.key;
 
   const isActive = (id: ViewPanel) => viewPanel === id;
 
   const handleSetViewPanel = (panel: ViewPanel) => {
     setViewPanel(panel);
-    onNavigate?.();
-  };
-
-  const handleSetStep = (id: typeof steps[number]["id"]) => {
-    setStep(id);
     onNavigate?.();
   };
 
@@ -207,57 +184,7 @@ export default function LeftMenu({ onNavigate }: { onNavigate?: () => void }) {
           })}
         </div>
 
-        {activeSectionKey === "layout" && (
-          <>
-            <div className="mb-2 px-3 mt-6">
-              <span className="text-[11px] font-semibold text-[var(--foreground)]/40 uppercase tracking-wider">
-                Steps
-              </span>
-            </div>
-            <div className="space-y-1">
-              {steps.map((s, idx) => {
-                const isActiveStep = s.id === step;
-                const isPast = idx < currentIdx;
-                const isDisabled = s.id === "loop-details" && data.cuttingType !== "loop";
-                return (
-                  <button
-                    key={s.id}
-                    disabled={isDisabled}
-                    onClick={() => !isDisabled && handleSetStep(s.id)}
-                    className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm transition-all duration-200 ${
-                      isActiveStep
-                        ? "bg-[var(--primary)]/10 text-[var(--primary)] font-semibold"
-                        : isPast
-                        ? "text-[var(--foreground)]/80 hover:bg-[var(--muted)] cursor-pointer"
-                        : isDisabled
-                        ? "text-[var(--foreground)]/30 cursor-not-allowed"
-                        : "text-[var(--foreground)]/50 hover:bg-[var(--muted)] hover:text-[var(--foreground)]/70 cursor-pointer"
-                    }`}
-                  >
-                    <span
-                      className={`flex items-center justify-center w-6 h-6 rounded-full text-[11px] font-bold shrink-0 ${
-                        isActiveStep
-                          ? "bg-[var(--primary)] text-white"
-                          : isPast
-                          ? "bg-[var(--accent)]/15 text-[var(--accent)]"
-                          : "bg-[var(--muted)] text-[var(--foreground)]/40"
-                      }`}
-                    >
-                      {isPast ? (
-                        <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={3}>
-                          <path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" />
-                        </svg>
-                      ) : (
-                        idx + 1
-                      )}
-                    </span>
-                    <span>{s.label}</span>
-                  </button>
-                );
-              })}
-            </div>
-          </>
-        )}
+
       </div>
 
       <div className="p-4 border-t border-[var(--border)]">

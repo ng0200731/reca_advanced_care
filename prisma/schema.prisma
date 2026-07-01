@@ -94,6 +94,8 @@ model LayoutDetail {
   layout              Layout   @relation(fields: [layoutId], references: [id], onDelete: Cascade)
   materialId          String   @map("material_id")
   material            Material @relation(fields: [materialId], references: [id])
+  sideType            String   @default("single") @map("side_type")
+  edgeType            String   @default("woven") @map("edge_type")
   widthMm             Float    @map("width_mm")
   heightMm            Float    @map("height_mm")
   orientation         String

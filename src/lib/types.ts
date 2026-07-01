@@ -9,6 +9,10 @@ export type Orientation = "portrait" | "landscape";
 
 export type CuttingType = "piece" | "loop";
 
+export type SideType = "single" | "double";
+
+export type EdgeType = "woven" | "slit";
+
 export type LoopFoldOrientation = "vertical" | "horizontal";
 
 export type PaddingOption = "same" | "individual";
@@ -44,6 +48,8 @@ export type LayoutData = {
   id?: string;
   name: string;
   materialId: string;
+  sideType: SideType;
+  edgeType: EdgeType;
   widthMm: number;
   heightMm: number;
   orientation: Orientation;

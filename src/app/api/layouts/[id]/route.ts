@@ -33,6 +33,8 @@ export async function PUT(
 
     const hasDetails =
       body.materialId !== undefined ||
+      body.sideType !== undefined ||
+      body.edgeType !== undefined ||
       body.widthMm !== undefined ||
       body.heightMm !== undefined ||
       body.orientation !== undefined ||
@@ -52,6 +54,8 @@ export async function PUT(
         upsert: {
           create: {
             materialId: body.materialId,
+            sideType: body.sideType ?? "single",
+            edgeType: body.edgeType ?? "woven",
             widthMm: body.widthMm,
             heightMm: body.heightMm,
             orientation: body.orientation,
@@ -74,6 +78,8 @@ export async function PUT(
           },
           update: {
             materialId: body.materialId,
+            sideType: body.sideType ?? "single",
+            edgeType: body.edgeType ?? "woven",
             widthMm: body.widthMm,
             heightMm: body.heightMm,
             orientation: body.orientation,
