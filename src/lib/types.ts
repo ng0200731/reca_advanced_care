@@ -48,8 +48,8 @@ export type LayoutData = {
   id?: string;
   name: string;
   materialId: string;
-  sideType: SideType;
-  edgeType: EdgeType;
+  sideType?: SideType;
+  edgeType?: EdgeType;
   widthMm: number;
   heightMm: number;
   orientation: Orientation;

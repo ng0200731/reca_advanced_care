@@ -235,6 +235,7 @@ export default function Home() {
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
   const viewPanel = useLayoutStore((s) => s.viewPanel);
   const data = useLayoutStore((s) => s.data);
+  const step = useLayoutStore((s) => s.step);
   const isDirty = useLayoutStore((s) => s.isDirty);
   const savedLayouts = useLayoutStore((s) => s.savedLayouts);
   const setSavedLayouts = useLayoutStore((s) => s.setSavedLayouts);
@@ -275,8 +276,8 @@ export default function Home() {
           id: layout.id,
           name: layout.name,
           materialId: d.materialId,
-          sideType: d.sideType ?? "single",
-          edgeType: d.edgeType ?? "woven",
+          sideType: d.sideType ?? undefined,
+          edgeType: d.edgeType ?? undefined,
           widthMm: d.widthMm,
           heightMm: d.heightMm,
           orientation: d.orientation,
@@ -502,35 +503,40 @@ export default function Home() {
                 onChange={(e) =>
                   useLayoutStore.getState().setLayoutName(e.target.value)
                 }
-                className="flex-1 px-3.5 py-2 border border-[var(--border)] rounded-lg text-sm bg-[var(--background)] text-[var(--foreground)] placeholder:text-[var(--foreground)]/40 focus:border-[var(--primary)] focus:ring-2 focus:ring-[var(--primary)]/20 outline-none transition-all duration-200"
+                disabled={step !== "final"}
+                className="flex-1 px-3.5 py-2 border border-[var(--border)] rounded-lg text-sm bg-[var(--background)] text-[var(--foreground)] placeholder:text-[var(--foreground)]/40 focus:border-[var(--primary)] focus:ring-2 focus:ring-[var(--primary)]/20 outline-none transition-all duration-200 disabled:opacity-50 disabled:cursor-not-allowed"
               />
               <button
                 onClick={handleSave}
-                className="px-5 py-2 bg-[var(--primary)] text-white rounded-lg text-sm font-semibold hover:bg-[var(--primary)]/90 active:scale-[0.98] transition-all duration-200 cursor-pointer shrink-0"
+                disabled={step !== "final"}
+                className="px-5 py-2 bg-[var(--primary)] text-white rounded-lg text-sm font-semibold hover:bg-[var(--primary)]/90 active:scale-[0.98] transition-all duration-200 cursor-pointer shrink-0 disabled:opacity-40 disabled:cursor-not-allowed"
               >
                 Save Layout
               </button>
               <div className="flex gap-2 shrink-0">
                 <button
                   onClick={() => handleExport("svg")}
-                  className="px-4 py-2 bg-[var(--accent)] text-white rounded-lg text-xs font-semibold hover:bg-[var(--accent)]/90 active:scale-[0.98] transition-all duration-200 cursor-pointer"
+                  disabled={step !== "final"}
+                  className="px-4 py-2 bg-[var(--accent)] text-white rounded-lg text-xs font-semibold hover:bg-[var(--accent)]/90 active:scale-[0.98] transition-all duration-200 cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed"
                 >
                   SVG
                 </button>
                 <button
                   onClick={() => handleExport("ai")}
-                  className="px-4 py-2 bg-[var(--secondary)] text-white rounded-lg text-xs font-semibold hover:bg-[var(--secondary)]/90 active:scale-[0.98] transition-all duration-200 cursor-pointer"
+                  disabled={step !== "final"}
+                  className="px-4 py-2 bg-[var(--secondary)] text-white rounded-lg text-xs font-semibold hover:bg-[var(--secondary)]/90 active:scale-[0.98] transition-all duration-200 cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed"
                 >
                   AI
                 </button>
                 <button
                   onClick={() => handleExport("pdf")}
-                  className="px-4 py-2 bg-[var(--destructive)] text-white rounded-lg text-xs font-semibold hover:bg-[var(--destructive)]/90 active:scale-[0.98] transition-all duration-200 cursor-pointer"
+                  disabled={step !== "final"}
+                  className="px-4 py-2 bg-[var(--destructive)] text-white rounded-lg text-xs font-semibold hover:bg-[var(--destructive)]/90 active:scale-[0.98] transition-all duration-200 cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed"
                 >
                   PDF
                 </button>
               </div>
-              {isDirty && (
+              {isDirty && step === "final" && (
                 <span className="text-xs text-[var(--accent)] font-medium shrink-0">Unsaved changes</span>
               )}
             </div>

@@ -116,6 +116,7 @@ export default function MaterialSelection() {
 
   const list = materials.length > 0 ? materials : defaultMaterials;
   const hasMaterial = Boolean(selectedId);
+  const canProceed = hasMaterial && sideType != null && edgeType != null;
 
   return (
     <div className="space-y-8">
@@ -242,7 +243,7 @@ export default function MaterialSelection() {
       <div className="flex justify-end">
         <button
           onClick={() => setStep("size")}
-          disabled={!hasMaterial}
+          disabled={!canProceed}
           className="px-6 py-2.5 bg-[var(--primary)] text-white rounded-lg text-sm font-semibold hover:bg-[var(--primary)]/90 disabled:opacity-40 disabled:cursor-not-allowed active:scale-[0.98] transition-all duration-200 cursor-pointer"
         >
           Next

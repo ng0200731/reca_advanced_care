@@ -167,11 +167,11 @@ export default function FinalView() {
           </div>
           <div className="flex justify-between sm:justify-start sm:gap-4">
             <span className="text-[var(--foreground)]/50">Side</span>
-            <span className="text-[var(--foreground)] font-medium capitalize">{data.sideType}</span>
+            <span className="text-[var(--foreground)] font-medium capitalize">{data.sideType || "-"}</span>
           </div>
           <div className="flex justify-between sm:justify-start sm:gap-4">
             <span className="text-[var(--foreground)]/50">Edge</span>
-            <span className="text-[var(--foreground)] font-medium capitalize">{data.edgeType}</span>
+            <span className="text-[var(--foreground)] font-medium capitalize">{data.edgeType || "-"}</span>
           </div>
           <div className="flex justify-between sm:justify-start sm:gap-4">
             <span className="text-[var(--foreground)]/50">Size</span>

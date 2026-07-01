@@ -30,8 +30,8 @@ export async function POST(request: Request) {
         details: {
           create: {
             materialId: body.materialId,
-            sideType: body.sideType ?? "single",
-            edgeType: body.edgeType ?? "woven",
+            sideType: body.sideType ?? null,
+            edgeType: body.edgeType ?? null,
             widthMm: body.widthMm,
             heightMm: body.heightMm,
             orientation: body.orientation,

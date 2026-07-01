@@ -57,8 +57,6 @@ type LayoutStore = {
 const initialData: LayoutData = {
   name: "",
   materialId: "",
-  sideType: "single",
-  edgeType: "woven",
   widthMm: 50,
   heightMm: 30,
   orientation: "portrait",
