@@ -17,8 +17,6 @@ type Props = {
   showDimensions?: boolean;
   isFront?: boolean;
   flipped?: boolean;
-  onFlipToggle?: () => void;
-  showFlipButton?: boolean;
 };
 
 export default function LabelCanvas({
@@ -36,8 +34,6 @@ export default function LabelCanvas({
   showDimensions = false,
   isFront = true,
   flipped = false,
-  onFlipToggle,
-  showFlipButton = false,
 }: Props) {
   const canvas = useMemo(() => {
     const w = orientation === "portrait" ? widthMm : heightMm;
@@ -59,9 +55,13 @@ export default function LabelCanvas({
     return { w, h, scale, cw, ch, foldX, foldY };
   }, [widthMm, heightMm, orientation, maxDisplayPx, showFold, foldOrientation, foldDistanceMm, foldMidForm]);
 
-  const btnSize = 10 * canvas.scale;
-  const btnX = canvas.cw - btnSize - 0.75 * canvas.scale;
-  const btnY = 0.75 * canvas.scale;
+  if (widthMm <= 0 || heightMm <= 0) {
+    return (
+      <div className="text-center text-sm text-[var(--foreground)]/50">
+        Invalid label dimensions
+      </div>
+    );
+  }
 
   const dimMargin = showDimensions ? 5 * canvas.scale : 0;
   const vbW = canvas.cw + 2 + dimMargin;
@@ -185,67 +185,34 @@ export default function LabelCanvas({
             BACK SIDE
           </text>
         )}
-
-        {showDimensions && (
-          <>
-            <text
-              x={canvas.cw / 2}
-              y={canvas.ch + 3.5 * canvas.scale}
-              textAnchor="middle"
-              fontSize={2 * canvas.scale}
-              fill="#0F172A"
-              fontWeight={500}
-            >
-              {canvas.w.toFixed(0)} mm
-            </text>
-            <text
-              x={canvas.cw + 3.5 * canvas.scale}
-              y={canvas.ch / 2}
-              textAnchor="middle"
-              fontSize={2 * canvas.scale}
-              fill="#0F172A"
-              fontWeight={500}
-              transform={`rotate(90,${canvas.cw + 3.5 * canvas.scale},${canvas.ch / 2})`}
-            >
-              {canvas.h.toFixed(0)} mm
-            </text>
-          </>
-        )}
       </g>
 
-      {showFlipButton && onFlipToggle && (
-        <g
-          onClick={onFlipToggle}
-          style={{ cursor: "pointer" }}
-          transform={`translate(${btnX}, ${btnY})`}
-        >
-          <rect
-            x={0}
-            y={0}
-            width={btnSize}
-            height={btnSize}
-            rx={1 * canvas.scale}
-            fill={flipped ? "var(--primary)" : "#F1F5F9"}
-            stroke="#CBD5E1"
-            strokeWidth={0.5 * canvas.scale}
-          />
-          <path
-            d={`M ${btnSize * 0.22} ${btnSize * 0.5} A ${btnSize * 0.18} ${btnSize * 0.18} 0 1 1 ${btnSize * 0.78} ${btnSize * 0.5}`}
-            fill="none"
-            stroke={flipped ? "white" : "#475569"}
-            strokeWidth={0.65 * canvas.scale}
-            strokeLinecap="round"
-          />
-          <path
-            d={`M ${btnSize * 0.78} ${btnSize * 0.42} L ${btnSize * 0.78} ${btnSize * 0.5} L ${btnSize * 0.68} ${btnSize * 0.5}`}
-            fill="none"
-            stroke={flipped ? "white" : "#475569"}
-            strokeWidth={0.65 * canvas.scale}
-            strokeLinecap="round"
-            strokeLinejoin="round"
-          />
+      {showDimensions && (
+        <g>
+          <text
+            x={canvas.cw / 2}
+            y={canvas.ch + 3.5 * canvas.scale}
+            textAnchor="middle"
+            fontSize={2 * canvas.scale}
+            fill="#0F172A"
+            fontWeight={500}
+          >
+            {canvas.w.toFixed(0)} mm
+          </text>
+          <text
+            x={canvas.cw + 3.5 * canvas.scale}
+            y={canvas.ch / 2}
+            textAnchor="middle"
+            fontSize={2 * canvas.scale}
+            fill="#0F172A"
+            fontWeight={500}
+            transform={`rotate(90,${canvas.cw + 3.5 * canvas.scale},${canvas.ch / 2})`}
+          >
+            {canvas.h.toFixed(0)} mm
+          </text>
         </g>
       )}
+
     </svg>
   );
 }

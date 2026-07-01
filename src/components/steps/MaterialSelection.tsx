@@ -109,9 +109,20 @@ export default function MaterialSelection() {
   const setStep = useLayoutStore((s) => s.setStep);
 
   useEffect(() => {
-    if (materials.length === 0) {
-      setMaterials(defaultMaterials);
-    }
+    if (materials.length > 0) return;
+
+    fetch("/api/materials")
+      .then((res) => res.json())
+      .then((list) => {
+        if (Array.isArray(list) && list.length > 0) {
+          setMaterials(list);
+        } else {
+          setMaterials(defaultMaterials);
+        }
+      })
+      .catch(() => {
+        setMaterials(defaultMaterials);
+      });
   }, [materials.length, setMaterials]);
 
   const list = materials.length > 0 ? materials : defaultMaterials;

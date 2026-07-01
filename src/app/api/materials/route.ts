@@ -1,19 +1,28 @@
 import { NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 
+const defaultMaterials = [
+  { id: "satin", name: "Satin", imageUrl: "/materials/satin.svg", displayOrder: 1 },
+  { id: "cotton", name: "Cotton", imageUrl: "/materials/cotton.svg", displayOrder: 2 },
+  { id: "polyester", name: "Polyester", imageUrl: "/materials/polyester.svg", displayOrder: 3 },
+];
+
 export async function GET() {
   try {
-    const materials = await prisma.material.findMany({
+    let materials = await prisma.material.findMany({
       orderBy: { displayOrder: "asc" },
     });
+
+    if (materials.length === 0) {
+      await prisma.material.createMany({ data: defaultMaterials });
+      materials = await prisma.material.findMany({
+        orderBy: { displayOrder: "asc" },
+      });
+    }
+
     return NextResponse.json(materials);
   } catch {
-    const fallback = [
-      { id: "satin", name: "Satin", imageUrl: "/materials/satin.svg", displayOrder: 1 },
-      { id: "cotton", name: "Cotton", imageUrl: "/materials/cotton.svg", displayOrder: 2 },
-      { id: "polyester", name: "Polyester", imageUrl: "/materials/polyester.svg", displayOrder: 3 },
-    ];
-    return NextResponse.json(fallback);
+    return NextResponse.json(defaultMaterials);
   }
 }
 

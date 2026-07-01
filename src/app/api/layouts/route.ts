@@ -23,6 +23,24 @@ export async function POST(request: Request) {
     if (!body.materialId) {
       return NextResponse.json({ error: "Material is required" }, { status: 400 });
     }
+    if (!body.padding || typeof body.padding !== "object") {
+      return NextResponse.json({ error: "Padding is required" }, { status: 400 });
+    }
+    if (!body.paddingOption) {
+      return NextResponse.json({ error: "Padding option is required" }, { status: 400 });
+    }
+    if (typeof body.widthMm !== "number" || typeof body.heightMm !== "number") {
+      return NextResponse.json({ error: "Label size is required" }, { status: 400 });
+    }
+    if (!body.orientation) {
+      return NextResponse.json({ error: "Orientation is required" }, { status: 400 });
+    }
+    if (!body.cuttingType) {
+      return NextResponse.json({ error: "Cutting type is required" }, { status: 400 });
+    }
+
+    const padding = body.padding as Record<string, unknown>;
+    const paddingRegion2 = body.paddingRegion2 as Record<string, unknown> | undefined;
 
     const layout = await prisma.layout.create({
       data: {
@@ -40,14 +58,14 @@ export async function POST(request: Request) {
             loopMidForm: body.loopMidForm ?? null,
             loopFoldDistanceMm: body.loopFoldDistanceMm ?? null,
             paddingOption: body.paddingOption,
-            paddingTop: body.padding.top,
-            paddingRight: body.padding.right,
-            paddingBottom: body.padding.bottom,
-            paddingLeft: body.padding.left,
-            paddingR2Top: body.paddingRegion2?.top ?? 0,
-            paddingR2Right: body.paddingRegion2?.right ?? 0,
-            paddingR2Bottom: body.paddingRegion2?.bottom ?? 0,
-            paddingR2Left: body.paddingRegion2?.left ?? 0,
+            paddingTop: typeof padding.top === "number" ? padding.top : 0,
+            paddingRight: typeof padding.right === "number" ? padding.right : 0,
+            paddingBottom: typeof padding.bottom === "number" ? padding.bottom : 0,
+            paddingLeft: typeof padding.left === "number" ? padding.left : 0,
+            paddingR2Top: typeof paddingRegion2?.top === "number" ? paddingRegion2.top : 0,
+            paddingR2Right: typeof paddingRegion2?.right === "number" ? paddingRegion2.right : 0,
+            paddingR2Bottom: typeof paddingRegion2?.bottom === "number" ? paddingRegion2.bottom : 0,
+            paddingR2Left: typeof paddingRegion2?.left === "number" ? paddingRegion2.left : 0,
             paddingSyncRegions: body.paddingSyncRegions ?? null,
             viewMode: body.viewMode ?? "side-by-side",
             isBackFlipped: body.isBackFlipped ?? null,

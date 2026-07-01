@@ -57,8 +57,8 @@ type LayoutStore = {
 const initialData: LayoutData = {
   name: "",
   materialId: "",
-  widthMm: 50,
-  heightMm: 30,
+  widthMm: 0,
+  heightMm: 0,
   orientation: "portrait",
   cuttingType: "piece",
   paddingOption: "same",

@@ -116,7 +116,17 @@ export default function FinalView() {
         </div>
       </div>
 
-      <div className={`bg-white border border-[var(--border)] rounded-xl p-6 shadow-[var(--shadow-sm)] ${containerClass}`}>
+      <div className={`relative bg-white border border-[var(--border)] rounded-xl p-6 shadow-[var(--shadow-sm)] ${containerClass}`}>
+        <button
+          onClick={() => setIsBackFlipped(!data.isBackFlipped)}
+          className="absolute top-0 right-0 z-10 p-2 rounded-bl-lg border-b border-l border-[var(--border)] bg-[var(--muted)] text-[var(--foreground)]/70 hover:text-[var(--primary)] hover:border-[var(--primary)]/40 transition-all duration-200 cursor-pointer"
+          aria-label="Flip back side"
+          title="Flip back side"
+        >
+          <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.75}>
+            <path strokeLinecap="round" strokeLinejoin="round" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
+          </svg>
+        </button>
         <div className="flex flex-col items-center">
           <span className="text-[11px] font-bold uppercase tracking-wider text-[var(--foreground)]/40 mb-2">Front</span>
           <LabelCanvas
@@ -152,8 +162,6 @@ export default function FinalView() {
             showDimensions
             isFront={false}
             flipped={data.isBackFlipped}
-            onFlipToggle={() => setIsBackFlipped(!data.isBackFlipped)}
-            showFlipButton
           />
         </div>
       </div>
@@ -176,7 +184,9 @@ export default function FinalView() {
           <div className="flex justify-between sm:justify-start sm:gap-4">
             <span className="text-[var(--foreground)]/50">Size</span>
             <span className="text-[var(--foreground)] font-medium">
-              {data.widthMm} × {data.heightMm} mm ({data.orientation})
+              {data.widthMm > 0 && data.heightMm > 0
+                ? `${data.widthMm} × ${data.heightMm} mm (${data.orientation})`
+                : "-"}
             </span>
           </div>
           <div className="flex justify-between sm:justify-start sm:gap-4">
@@ -194,7 +204,7 @@ export default function FinalView() {
           <div className="flex justify-between sm:justify-start sm:gap-4 sm:col-span-2">
             <span className="text-[var(--foreground)]/50">Padding</span>
             <span className="text-[var(--foreground)] font-medium font-mono text-xs sm:text-sm">
-              T:{data.padding.top} R:{data.padding.right} B:{data.padding.bottom} L:{data.padding.left}
+              R1 T:{data.padding.top} R:{data.padding.right} B:{data.padding.bottom} L:{data.padding.left}
               {data.paddingRegion2 && (
                 <> | R2 T:{data.paddingRegion2.top} R:{data.paddingRegion2.right} B:{data.paddingRegion2.bottom} L:{data.paddingRegion2.left}</>
               )}

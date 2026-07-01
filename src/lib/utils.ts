@@ -63,6 +63,7 @@ export function generateSvgLabel(
 
   const shapes: string[] = [];
   const text: string[] = [];
+  const dimensions: string[] = [];
 
   shapes.push(`<rect x="0" y="0" width="${w}" height="${h}" fill="white" stroke="black" stroke-width="0.3"/>`);
 
@@ -109,8 +110,8 @@ export function generateSvgLabel(
 
   if (showDimensions) {
     const fontSize = 2.5;
-    text.push(`<text x="${w / 2}" y="${h + 3}" text-anchor="middle" font-size="${fontSize}" fill="#333">${w.toFixed(0)} mm</text>`);
-    text.push(`<text x="${w + 3}" y="${h / 2}" text-anchor="middle" font-size="${fontSize}" fill="#333" transform="rotate(90,${w + 3},${h / 2})">${h.toFixed(0)} mm</text>`);
+    dimensions.push(`<text x="${w / 2}" y="${h + 3}" text-anchor="middle" font-size="${fontSize}" fill="#333">${w.toFixed(0)} mm</text>`);
+    dimensions.push(`<text x="${w + 3}" y="${h / 2}" text-anchor="middle" font-size="${fontSize}" fill="#333" transform="rotate(90,${w + 3},${h / 2})">${h.toFixed(0)} mm</text>`);
   }
 
   const isBackFlipped = isFlipped && labelText && !labelText.isFront;
@@ -120,14 +121,17 @@ export function generateSvgLabel(
     parts.push(...shapes);
     parts.push(`</g>`);
     parts.push(...text);
+    parts.push(...dimensions);
   } else if (isBackFlipped) {
     parts.push(`<g transform="rotate(180, ${w / 2}, ${h / 2})">`);
     parts.push(...shapes);
     parts.push(...text);
     parts.push(`</g>`);
+    parts.push(...dimensions);
   } else {
     parts.push(...shapes);
     parts.push(...text);
+    parts.push(...dimensions);
   }
 
   parts.push(`</svg>`);

@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useCallback, useState } from "react";
+import { useEffect, useCallback, useState, useRef } from "react";
 import LeftMenu from "@/components/LeftMenu";
 import StepRenderer from "@/components/StepRenderer";
 import StepIndicator from "@/components/StepIndicator";
@@ -107,7 +107,7 @@ ${centerText(w / 2, h / 2, "BACK SIDE", 4)}
 `;
   }
 
-  text += `% Dimensions
+  const dimensions = `% Dimensions
 0 0 0 setrgbcolor
 /Helvetica findfont 2.5 scalefont setfont
 ${w / 2} -3 moveto
@@ -129,16 +129,16 @@ grestore
 ${w} 0 translate
 -1 1 scale
 ${shapes}grestore
-${text}`;
+${text}${dimensions}`;
   } else if (isFlipped) {
     body += `% Flip back side upside down
 ${w / 2} ${h / 2} translate
 180 rotate
 ${-w / 2} ${-h / 2} translate
 ${shapes}${text}grestore
-`;
+${dimensions}`;
   } else {
-    body += shapes + text + "grestore\n";
+    body += shapes + text + dimensions + "grestore\n";
   }
 
   body += "% Panel end\n";
@@ -250,6 +250,7 @@ export default function Home() {
   const data = useLayoutStore((s) => s.data);
   const step = useLayoutStore((s) => s.step);
   const isDirty = useLayoutStore((s) => s.isDirty);
+  const canAct = step === "final" && Boolean(data.materialId) && Boolean(data.sideType) && Boolean(data.edgeType) && data.widthMm > 0 && data.heightMm > 0;
   const savedLayouts = useLayoutStore((s) => s.savedLayouts);
   const setSavedLayouts = useLayoutStore((s) => s.setSavedLayouts);
   const loadLayout = useLayoutStore((s) => s.loadLayout);
@@ -259,6 +260,8 @@ export default function Home() {
   const [loading, setLoading] = useState(false);
   const [loadError, setLoadError] = useState("");
   const [editingLayout, setEditingLayout] = useState<{ id: string; name: string } | null>(null);
+  const [saveToast, setSaveToast] = useState(false);
+  const saveToastTimeout = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const fetchLayouts = useCallback(async () => {
     try {
@@ -271,6 +274,12 @@ export default function Home() {
   useEffect(() => {
     fetchLayouts();
   }, [fetchLayouts]);
+
+  useEffect(() => {
+    return () => {
+      if (saveToastTimeout.current) clearTimeout(saveToastTimeout.current);
+    };
+  }, []);
 
   const handleLoad = useCallback(
     async (id: string) => {
@@ -384,13 +393,16 @@ export default function Home() {
       const saved = await res.json();
       const current = useLayoutStore.getState().savedLayouts;
       setSavedLayouts([...current, { id: saved.id, name: saved.name }]);
+      setSaveToast(true);
+      if (saveToastTimeout.current) clearTimeout(saveToastTimeout.current);
+      saveToastTimeout.current = setTimeout(() => setSaveToast(false), 3000);
     } else if (res.status === 409) {
       alert("A layout with this name already exists. Please use a different name.");
     } else {
       const err = await res.json().catch(() => ({}));
       alert(err.error || "Failed to save layout");
     }
-  }, [data, markClean, setSavedLayouts]);
+  }, [data, markClean, setSavedLayouts, setSaveToast]);
 
   const handleExport = useCallback(
     async (format: "svg" | "ai" | "pdf") => {
@@ -516,12 +528,12 @@ export default function Home() {
                 onChange={(e) =>
                   useLayoutStore.getState().setLayoutName(e.target.value)
                 }
-                disabled={step !== "final"}
+                disabled={!canAct}
                 className="flex-1 px-3.5 py-2 border border-[var(--border)] rounded-lg text-sm bg-[var(--background)] text-[var(--foreground)] placeholder:text-[var(--foreground)]/40 focus:border-[var(--primary)] focus:ring-2 focus:ring-[var(--primary)]/20 outline-none transition-all duration-200 disabled:opacity-50 disabled:cursor-not-allowed"
               />
               <button
                 onClick={handleSave}
-                disabled={step !== "final"}
+                disabled={!canAct}
                 className="px-5 py-2 bg-[var(--primary)] text-white rounded-lg text-sm font-semibold hover:bg-[var(--primary)]/90 active:scale-[0.98] transition-all duration-200 cursor-pointer shrink-0 disabled:opacity-40 disabled:cursor-not-allowed"
               >
                 Save Layout
@@ -529,29 +541,38 @@ export default function Home() {
               <div className="flex gap-2 shrink-0">
                 <button
                   onClick={() => handleExport("svg")}
-                  disabled={step !== "final"}
+                  disabled={!canAct}
                   className="px-4 py-2 bg-[var(--accent)] text-white rounded-lg text-xs font-semibold hover:bg-[var(--accent)]/90 active:scale-[0.98] transition-all duration-200 cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed"
                 >
                   SVG
                 </button>
                 <button
                   onClick={() => handleExport("ai")}
-                  disabled={step !== "final"}
+                  disabled={!canAct}
                   className="px-4 py-2 bg-[var(--secondary)] text-white rounded-lg text-xs font-semibold hover:bg-[var(--secondary)]/90 active:scale-[0.98] transition-all duration-200 cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed"
                 >
                   AI
                 </button>
                 <button
                   onClick={() => handleExport("pdf")}
-                  disabled={step !== "final"}
+                  disabled={!canAct}
                   className="px-4 py-2 bg-[var(--destructive)] text-white rounded-lg text-xs font-semibold hover:bg-[var(--destructive)]/90 active:scale-[0.98] transition-all duration-200 cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed"
                 >
                   PDF
                 </button>
               </div>
-              {isDirty && step === "final" && (
+              {isDirty && canAct && (
                 <span className="text-xs text-[var(--accent)] font-medium shrink-0">Unsaved changes</span>
               )}
+            </div>
+
+            <div
+              className={`fixed bottom-6 left-1/2 -translate-x-1/2 z-50 px-4 py-2.5 bg-white border border-[var(--border)] rounded-lg shadow-[var(--shadow-md)] text-sm text-[var(--foreground)] flex items-center gap-2 transition-all duration-200 ${
+                saveToast ? "opacity-100 translate-y-0" : "opacity-0 translate-y-2 pointer-events-none"
+              }`}
+            >
+              <span className="w-2 h-2 rounded-full bg-green-500" />
+              Save complete
             </div>
             </div>
           </div>
