@@ -37,8 +37,10 @@ type TranslationTable = {
   table_name: string;
 };
 
+type DrawSnap = { x: number; y: number; kind: "corner" | "edge" | null };
+
 type DragState =
-  | { type: "draw"; startX: number; startY: number; currentX: number; currentY: number }
+  | { type: "draw"; startX: number; startY: number; currentX: number; currentY: number; startSnap: DrawSnap; endSnap: DrawSnap }
   | { type: "move"; regionId: string; offsetX: number; offsetY: number }
   | { type: "resize"; regionId: string; handle: string; startX: number; startY: number }
   | null;
@@ -81,6 +83,7 @@ export default function SplitWorkspace() {
 
   const [selectedLayout, setSelectedLayout] = useState<SavedLayout | null>(null);
   const [selectedRegionId, setSelectedRegionId] = useState<string | null>(null);
+  const [hoveredHandle, setHoveredHandle] = useState<string | null>(null);
   const [drag, setDrag] = useState<DragState>(null);
   const [scale, setScale] = useState(4);
   const [showImage, setShowImage] = useState(true);
@@ -189,27 +192,96 @@ export default function SplitWorkspace() {
   };
 
   const constrainRect = (x: number, y: number, w: number, h: number) => {
-    const nx = Math.max(0, Math.min(x, widthMm));
-    const ny = Math.max(0, Math.min(y, heightMm));
+    const minX = paddingRect.x;
+    const minY = paddingRect.y;
+    const maxX = paddingRect.x + paddingRect.w;
+    const maxY = paddingRect.y + paddingRect.h;
+    const nx = Math.max(minX, Math.min(x, maxX));
+    const ny = Math.max(minY, Math.min(y, maxY));
     let nw = Math.max(1, w);
     let nh = Math.max(1, h);
-    if (nx + nw > widthMm) nw = widthMm - nx;
-    if (ny + nh > heightMm) nh = heightMm - ny;
+    if (nx + nw > maxX) nw = maxX - nx;
+    if (ny + nh > maxY) nh = maxY - ny;
     return { x: nx, y: ny, w: nw, h: nh };
+  };
+
+  const paddingRect = useMemo(
+    () => ({
+      x: padding.left,
+      y: padding.top,
+      w: widthMm - padding.left - padding.right,
+      h: heightMm - padding.top - padding.bottom,
+    }),
+    [padding.left, padding.top, padding.right, padding.bottom, widthMm, heightMm]
+  );
+
+  const isInsidePadding = (x: number, y: number) =>
+    x >= paddingRect.x && x <= paddingRect.x + paddingRect.w && y >= paddingRect.y && y <= paddingRect.y + paddingRect.h;
+
+  const getNearestPaddingCorner = (x: number, y: number): { x: number; y: number } | null => {
+    const thresholdMm = 5 / scale;
+    const corners = [
+      { x: paddingRect.x, y: paddingRect.y },
+      { x: paddingRect.x + paddingRect.w, y: paddingRect.y },
+      { x: paddingRect.x, y: paddingRect.y + paddingRect.h },
+      { x: paddingRect.x + paddingRect.w, y: paddingRect.y + paddingRect.h },
+    ];
+    let best: { x: number; y: number } | null = null;
+    let bestDist = Infinity;
+    for (const c of corners) {
+      const dist = Math.hypot(x - c.x, y - c.y);
+      if (dist <= thresholdMm && dist < bestDist) {
+        best = c;
+        bestDist = dist;
+      }
+    }
+    return best;
+  };
+
+  const getNearestPaddingEdge = (x: number, y: number): { x: number; y: number } | null => {
+    const thresholdMm = 5 / scale;
+    const candidates = [
+      { x, y: paddingRect.y },
+      { x, y: paddingRect.y + paddingRect.h },
+      { x: paddingRect.x, y },
+      { x: paddingRect.x + paddingRect.w, y },
+    ];
+    let best: { x: number; y: number } | null = null;
+    let bestDist = Infinity;
+    for (const p of candidates) {
+      const dist = Math.hypot(x - p.x, y - p.y);
+      if (dist <= thresholdMm && dist < bestDist) {
+        best = p;
+        bestDist = dist;
+      }
+    }
+    return best;
+  };
+
+  const snapToPadding = (x: number, y: number): DrawSnap => {
+    const corner = getNearestPaddingCorner(x, y);
+    if (corner) return { ...corner, kind: "corner" };
+    const edge = getNearestPaddingEdge(x, y);
+    if (edge) return { ...edge, kind: "edge" };
+    return { x, y, kind: null };
   };
 
   const handleSvgMouseDown = (e: React.MouseEvent) => {
     if (!svgRef.current || widthMm === 0) return;
     const { x, y } = getMouseMm(e);
 
-    // Check resize handles
+    // Check resize handles (4 corners + 4 edges)
     if (selectedRegionId) {
       const region = config.regions.find((r) => r.id === selectedRegionId);
       if (region) {
         const handles = [
           { name: "nw", x: region.x, y: region.y },
+          { name: "n", x: region.x + region.widthMm / 2, y: region.y },
           { name: "ne", x: region.x + region.widthMm, y: region.y },
+          { name: "w", x: region.x, y: region.y + region.heightMm / 2 },
+          { name: "e", x: region.x + region.widthMm, y: region.y + region.heightMm / 2 },
           { name: "sw", x: region.x, y: region.y + region.heightMm },
+          { name: "s", x: region.x + region.widthMm / 2, y: region.y + region.heightMm },
           { name: "se", x: region.x + region.widthMm, y: region.y + region.heightMm },
         ];
         for (const h of handles) {
@@ -228,14 +300,29 @@ export default function SplitWorkspace() {
       .reverse()
       .find((r) => x >= r.x && x <= r.x + r.widthMm && y >= r.y && y <= r.y + regionHeightMm(r));
     if (clickedRegion) {
-      setSelectedRegionId(clickedRegion.id);
-      setDrag({ type: "move", regionId: clickedRegion.id, offsetX: x - clickedRegion.x, offsetY: y - clickedRegion.y });
+      if (selectedRegionId === clickedRegion.id) {
+        // Already selected: start panning/moving
+        setDrag({ type: "move", regionId: clickedRegion.id, offsetX: x - clickedRegion.x, offsetY: y - clickedRegion.y });
+      } else {
+        // First click selects and shows handles; drag again to move
+        setSelectedRegionId(clickedRegion.id);
+      }
       return;
     }
 
-    // Start drawing
+    // Start drawing — must begin inside the green dotted padding region
+    const startSnap = snapToPadding(x, y);
+    if (!isInsidePadding(startSnap.x, startSnap.y)) return;
     setSelectedRegionId(null);
-    setDrag({ type: "draw", startX: x, startY: y, currentX: x, currentY: y });
+    setDrag({
+      type: "draw",
+      startX: startSnap.x,
+      startY: startSnap.y,
+      currentX: startSnap.x,
+      currentY: startSnap.y,
+      startSnap,
+      endSnap: startSnap,
+    });
   };
 
   const regionHeightMm = (r: SplitRegion) => r.heightMm;
@@ -245,7 +332,8 @@ export default function SplitWorkspace() {
     const { x, y } = getMouseMm(e);
 
     if (drag.type === "draw") {
-      setDrag({ ...drag, currentX: x, currentY: y });
+      const endSnap = snapToPadding(x, y);
+      setDrag({ ...drag, currentX: endSnap.x, currentY: endSnap.y, endSnap });
     } else if (drag.type === "move") {
       const region = config.regions.find((r) => r.id === drag.regionId);
       if (!region) return;
@@ -260,7 +348,11 @@ export default function SplitWorkspace() {
       }
       nx = snapValue(nx, snapTargetsX);
       ny = snapValue(ny, snapTargetsY);
-      const { x: cx, y: cy } = constrainRect(nx, ny, region.widthMm, region.heightMm);
+      // Keep the entire region inside the green dotted padding rectangle
+      const maxMoveX = paddingRect.x + paddingRect.w - region.widthMm;
+      const maxMoveY = paddingRect.y + paddingRect.h - region.heightMm;
+      const cx = maxMoveX >= paddingRect.x ? Math.max(paddingRect.x, Math.min(nx, maxMoveX)) : paddingRect.x;
+      const cy = maxMoveY >= paddingRect.y ? Math.max(paddingRect.y, Math.min(ny, maxMoveY)) : paddingRect.y;
       updateRegion(drag.regionId, { x: cx, y: cy });
     } else if (drag.type === "resize") {
       const region = config.regions.find((r) => r.id === drag.regionId);
@@ -352,7 +444,7 @@ export default function SplitWorkspace() {
     const next = [...config.regions, newRegion];
     renumberRegions(next);
     setConfig((c) => ({ ...c, regions: next }));
-    setSelectedRegionId(newRegion.id);
+    // New region is shown but not auto-selected; user must click it to resize/edit.
   };
 
   const renumberRegions = (regions: SplitRegion[]) => {
@@ -718,10 +810,42 @@ export default function SplitWorkspace() {
                     </text>
                     {selectedRegionId === r.id && (
                       <>
-                        <rect x={mmToPx(r.x) - 4} y={mmToPx(r.y) - 4} width={8} height={8} fill="#1E3A5F" />
-                        <rect x={mmToPx(r.x + r.widthMm) - 4} y={mmToPx(r.y) - 4} width={8} height={8} fill="#1E3A5F" />
-                        <rect x={mmToPx(r.x) - 4} y={mmToPx(r.y + r.heightMm) - 4} width={8} height={8} fill="#1E3A5F" />
-                        <rect x={mmToPx(r.x + r.widthMm) - 4} y={mmToPx(r.y + r.heightMm) - 4} width={8} height={8} fill="#1E3A5F" />
+                        {[
+                          { name: "nw", x: r.x, y: r.y },
+                          { name: "n", x: r.x + r.widthMm / 2, y: r.y },
+                          { name: "ne", x: r.x + r.widthMm, y: r.y },
+                          { name: "w", x: r.x, y: r.y + r.heightMm / 2 },
+                          { name: "e", x: r.x + r.widthMm, y: r.y + r.heightMm / 2 },
+                          { name: "sw", x: r.x, y: r.y + r.heightMm },
+                          { name: "s", x: r.x + r.widthMm / 2, y: r.y + r.heightMm },
+                          { name: "se", x: r.x + r.widthMm, y: r.y + r.heightMm },
+                        ].map((h) => {
+                          const isHovered = hoveredHandle === h.name;
+                          return (
+                            <g key={h.name}>
+                              {/* Larger invisible hit area for easier hover/click */}
+                              <rect
+                                x={mmToPx(h.x) - 8}
+                                y={mmToPx(h.y) - 8}
+                                width={16}
+                                height={16}
+                                fill="transparent"
+                                onMouseEnter={() => setHoveredHandle(h.name)}
+                                onMouseLeave={() => setHoveredHandle(null)}
+                                style={{ cursor: "pointer" }}
+                              />
+                              {/* Visible handle */}
+                              <rect
+                                x={mmToPx(h.x) - 4}
+                                y={mmToPx(h.y) - 4}
+                                width={8}
+                                height={8}
+                                fill={isHovered ? "#3B82F6" : "#1E3A5F"}
+                                pointerEvents="none"
+                              />
+                            </g>
+                          );
+                        })}
                       </>
                     )}
                   </g>
@@ -729,20 +853,37 @@ export default function SplitWorkspace() {
 
                 {/* Drawing preview */}
                 {drag?.type === "draw" && (
-                  <rect
-                    x={mmToPx(Math.min(drag.startX, drag.currentX))}
-                    y={mmToPx(Math.min(drag.startY, drag.currentY))}
-                    width={mmToPx(Math.abs(drag.currentX - drag.startX))}
-                    height={mmToPx(Math.abs(drag.currentY - drag.startY))}
-                    fill="rgba(30,58,95,0.1)"
-                    stroke="#1E3A5F"
-                    strokeDasharray="4,4"
-                  />
+                  <>
+                    <rect
+                      x={mmToPx(Math.min(drag.startX, drag.currentX))}
+                      y={mmToPx(Math.min(drag.startY, drag.currentY))}
+                      width={mmToPx(Math.abs(drag.currentX - drag.startX))}
+                      height={mmToPx(Math.abs(drag.currentY - drag.startY))}
+                      fill="rgba(30,58,95,0.1)"
+                      stroke="#1E3A5F"
+                      strokeDasharray="4,4"
+                    />
+                    {/* Start dot: yellow when snapped to a corner */}
+                    {drag.startSnap.kind === "corner" && (
+                      <circle cx={mmToPx(drag.startSnap.x)} cy={mmToPx(drag.startSnap.y)} r={5} fill="#FACC15" stroke="#B45309" strokeWidth={1} />
+                    )}
+                    {/* End dot: red on edge, yellow on corner */}
+                    {drag.endSnap.kind && (
+                      <circle
+                        cx={mmToPx(drag.endSnap.x)}
+                        cy={mmToPx(drag.endSnap.y)}
+                        r={5}
+                        fill={drag.endSnap.kind === "corner" ? "#FACC15" : "#EF4444"}
+                        stroke={drag.endSnap.kind === "corner" ? "#B45309" : "#991B1B"}
+                        strokeWidth={1}
+                      />
+                    )}
+                  </>
                 )}
               </svg>
 
               <div className="text-xs text-[var(--foreground)]/50">
-                Drag on the canvas to draw regions. Click a region to select. Drag edges to resize. Max {MAX_REGIONS} regions (R1-R10).
+                Drag inside the green dotted region to draw regions. Click a region to select it and show resize handles; drag a selected region to pan it (kept inside the green dotted region). Max {MAX_REGIONS} regions (R1-R10).
               </div>
             </>
           )}
