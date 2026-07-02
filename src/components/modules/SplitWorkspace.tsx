@@ -15,6 +15,13 @@ type SavedLayout = {
     paddingRight: number;
     paddingBottom: number;
     paddingLeft: number;
+    sideType?: string;
+    paddingR2Top?: number;
+    paddingR2Right?: number;
+    paddingR2Bottom?: number;
+    paddingR2Left?: number;
+    viewMode?: string;
+    isBackFlipped?: boolean;
   } | null;
 };
 
@@ -40,7 +47,7 @@ type TranslationTable = {
 type DrawSnap = { x: number; y: number; kind: "corner" | "edge" | null };
 
 type DragState =
-  | { type: "draw"; startX: number; startY: number; currentX: number; currentY: number; startSnap: DrawSnap; endSnap: DrawSnap }
+  | { type: "draw"; side: "front" | "back"; startX: number; startY: number; currentX: number; currentY: number; startSnap: DrawSnap; endSnap: DrawSnap }
   | { type: "move"; regionId: string; offsetX: number; offsetY: number }
   | { type: "resize"; regionId: string; handle: string; startX: number; startY: number }
   | null;
@@ -84,13 +91,13 @@ export default function SplitWorkspace() {
   const [selectedLayout, setSelectedLayout] = useState<SavedLayout | null>(null);
   const [selectedRegionId, setSelectedRegionId] = useState<string | null>(null);
   const [hoveredHandle, setHoveredHandle] = useState<string | null>(null);
+  const [activeSide, setActiveSide] = useState<"front" | "back">("front");
   const [drag, setDrag] = useState<DragState>(null);
   const [scale, setScale] = useState(4);
   const [showImage, setShowImage] = useState(true);
   const [simulation, setSimulation] = useState<ReturnType<typeof simulateOverflow> | null>(null);
   const [showFixedDialog, setShowFixedDialog] = useState(false);
   const [viewLabelIndex, setViewLabelIndex] = useState(0);
-  const [viewSide, setViewSide] = useState<"front" | "back">("front");
 
   const svgRef = useRef<SVGSVGElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -107,6 +114,20 @@ export default function SplitWorkspace() {
       left: d.paddingLeft,
     };
   }, [selectedLayout]);
+
+  const getPadding = (side: "front" | "back") => {
+    if (!selectedLayout?.details) return padding;
+    const d = selectedLayout.details;
+    if (side === "back" && d.paddingR2Top !== undefined) {
+      return {
+        top: d.paddingR2Top,
+        right: d.paddingR2Right ?? 0,
+        bottom: d.paddingR2Bottom ?? 0,
+        left: d.paddingR2Left ?? 0,
+      };
+    }
+    return padding;
+  };
 
   const fetchData = useCallback(async () => {
     try {
@@ -148,14 +169,36 @@ export default function SplitWorkspace() {
     style.textContent = `@font-face { font-family: 'SplitFont'; src: url('${font.file_path}'); }`;
   }, [config.fontId, fonts]);
 
+  const parseSideImage = (imageData: string | undefined, side: "front" | "back"): string | undefined => {
+    if (!imageData) return undefined;
+    try {
+      const parsed = JSON.parse(imageData);
+      if (typeof parsed === "object" && parsed !== null) {
+        return side === "front" ? parsed.front : parsed.back;
+      }
+    } catch {
+      // legacy: treat the whole value as the front image
+    }
+    return side === "front" ? imageData : undefined;
+  };
+
+  const setSideImage = (side: "front" | "back", data: string | undefined) => {
+    setConfig((c) => {
+      const front = side === "front" ? data : parseSideImage(c.imageData, "front");
+      const back = side === "back" ? data : parseSideImage(c.imageData, "back");
+      if (!front && !back) return { ...c, imageData: undefined };
+      return { ...c, imageData: JSON.stringify({ front, back }) };
+    });
+  };
+
   const loadImageFile = useCallback((file: File) => {
     const reader = new FileReader();
     reader.onload = () => {
-      setConfig((c) => ({ ...c, imageData: reader.result as string }));
-      setMessage("Image pasted");
+      setSideImage(activeSide, reader.result as string);
+      setMessage(`Image pasted on ${activeSide}`);
     };
     reader.readAsDataURL(file);
-  }, []);
+  }, [activeSide]);
 
   useEffect(() => {
     const handlePaste = (e: ClipboardEvent) => {
@@ -177,8 +220,10 @@ export default function SplitWorkspace() {
   const pxToMm = (px: number) => px / scale;
 
   const getMouseMm = (e: React.MouseEvent | MouseEvent): { x: number; y: number } => {
-    if (!svgRef.current) return { x: 0, y: 0 };
-    const rect = svgRef.current.getBoundingClientRect();
+    const target = (e as React.MouseEvent).currentTarget;
+    const svg = target instanceof SVGSVGElement ? target : svgRef.current;
+    if (!svg) return { x: 0, y: 0 };
+    const rect = svg.getBoundingClientRect();
     const pxX = (e as MouseEvent).clientX - rect.left;
     const pxY = (e as MouseEvent).clientY - rect.top;
     return { x: pxToMm(pxX), y: pxToMm(pxY) };
@@ -191,40 +236,70 @@ export default function SplitWorkspace() {
     return value;
   };
 
-  const constrainRect = (x: number, y: number, w: number, h: number) => {
-    const minX = paddingRect.x;
-    const minY = paddingRect.y;
-    const maxX = paddingRect.x + paddingRect.w;
-    const maxY = paddingRect.y + paddingRect.h;
-    const nx = Math.max(minX, Math.min(x, maxX));
-    const ny = Math.max(minY, Math.min(y, maxY));
+  const getPaddingRect = (side: "front" | "back") => {
+    const p = getPadding(side);
+    return {
+      x: p.left,
+      y: p.top,
+      w: widthMm - p.left - p.right,
+      h: heightMm - p.top - p.bottom,
+    };
+  };
+
+  const getBezierConnectionPath = (sx: number, sy: number, tx: number, ty: number) => {
+    const distance = Math.hypot(tx - sx, ty - sy);
+    const offset = Math.max(20 / scale, distance * 0.35);
+    return `M ${mmToPx(sx)} ${mmToPx(sy)} C ${mmToPx(sx)} ${mmToPx(sy + offset)}, ${mmToPx(tx)} ${mmToPx(ty - offset)}, ${mmToPx(tx)} ${mmToPx(ty)}`;
+  };
+
+  const wouldCreateOverflowCycle = (sourceId: string, targetRegionId: string) => {
+    const visited = new Set<string>();
+    let current = targetRegionId;
+    while (current) {
+      if (visited.has(current)) return true;
+      visited.add(current);
+      const nextRegion = config.regions.find((r) => r.regionId === current);
+      if (!nextRegion) break;
+      if (nextRegion.id === sourceId) return true;
+      current = nextRegion.overflowTargetId || "";
+    }
+    return false;
+  };
+
+  const isValidOverflowTarget = (source: SplitRegion, target: SplitRegion) => {
+    if (source.id === target.id) return false;
+    const usedByAnother = config.regions.some(
+      (r) => r.id !== source.id && r.overflowTargetId === target.regionId
+    );
+    if (usedByAnother) return false;
+    if (wouldCreateOverflowCycle(source.id, target.regionId)) return false;
+    return true;
+  };
+
+  const constrainRect = (x: number, y: number, w: number, h: number, side: "front" | "back") => {
+    const pr = getPaddingRect(side);
+    const nx = Math.max(pr.x, Math.min(x, pr.x + pr.w));
+    const ny = Math.max(pr.y, Math.min(y, pr.y + pr.h));
     let nw = Math.max(1, w);
     let nh = Math.max(1, h);
-    if (nx + nw > maxX) nw = maxX - nx;
-    if (ny + nh > maxY) nh = maxY - ny;
+    if (nx + nw > pr.x + pr.w) nw = pr.x + pr.w - nx;
+    if (ny + nh > pr.y + pr.h) nh = pr.y + pr.h - ny;
     return { x: nx, y: ny, w: nw, h: nh };
   };
 
-  const paddingRect = useMemo(
-    () => ({
-      x: padding.left,
-      y: padding.top,
-      w: widthMm - padding.left - padding.right,
-      h: heightMm - padding.top - padding.bottom,
-    }),
-    [padding.left, padding.top, padding.right, padding.bottom, widthMm, heightMm]
-  );
+  const isInsidePadding = (x: number, y: number, side: "front" | "back") => {
+    const pr = getPaddingRect(side);
+    return x >= pr.x && x <= pr.x + pr.w && y >= pr.y && y <= pr.y + pr.h;
+  };
 
-  const isInsidePadding = (x: number, y: number) =>
-    x >= paddingRect.x && x <= paddingRect.x + paddingRect.w && y >= paddingRect.y && y <= paddingRect.y + paddingRect.h;
-
-  const getNearestPaddingCorner = (x: number, y: number): { x: number; y: number } | null => {
+  const getNearestPaddingCorner = (x: number, y: number, side: "front" | "back"): { x: number; y: number } | null => {
     const thresholdMm = 5 / scale;
+    const pr = getPaddingRect(side);
     const corners = [
-      { x: paddingRect.x, y: paddingRect.y },
-      { x: paddingRect.x + paddingRect.w, y: paddingRect.y },
-      { x: paddingRect.x, y: paddingRect.y + paddingRect.h },
-      { x: paddingRect.x + paddingRect.w, y: paddingRect.y + paddingRect.h },
+      { x: pr.x, y: pr.y },
+      { x: pr.x + pr.w, y: pr.y },
+      { x: pr.x, y: pr.y + pr.h },
+      { x: pr.x + pr.w, y: pr.y + pr.h },
     ];
     let best: { x: number; y: number } | null = null;
     let bestDist = Infinity;
@@ -238,13 +313,14 @@ export default function SplitWorkspace() {
     return best;
   };
 
-  const getNearestPaddingEdge = (x: number, y: number): { x: number; y: number } | null => {
+  const getNearestPaddingEdge = (x: number, y: number, side: "front" | "back"): { x: number; y: number } | null => {
     const thresholdMm = 5 / scale;
+    const pr = getPaddingRect(side);
     const candidates = [
-      { x, y: paddingRect.y },
-      { x, y: paddingRect.y + paddingRect.h },
-      { x: paddingRect.x, y },
-      { x: paddingRect.x + paddingRect.w, y },
+      { x, y: pr.y },
+      { x, y: pr.y + pr.h },
+      { x: pr.x, y },
+      { x: pr.x + pr.w, y },
     ];
     let best: { x: number; y: number } | null = null;
     let bestDist = Infinity;
@@ -258,21 +334,22 @@ export default function SplitWorkspace() {
     return best;
   };
 
-  const snapToPadding = (x: number, y: number): DrawSnap => {
-    const corner = getNearestPaddingCorner(x, y);
+  const snapToPadding = (x: number, y: number, side: "front" | "back"): DrawSnap => {
+    const corner = getNearestPaddingCorner(x, y, side);
     if (corner) return { ...corner, kind: "corner" };
-    const edge = getNearestPaddingEdge(x, y);
+    const edge = getNearestPaddingEdge(x, y, side);
     if (edge) return { ...edge, kind: "edge" };
     return { x, y, kind: null };
   };
 
-  const handleSvgMouseDown = (e: React.MouseEvent) => {
-    if (!svgRef.current || widthMm === 0) return;
+  const handleSvgMouseDown = (e: React.MouseEvent, side: "front" | "back") => {
+    if (widthMm === 0) return;
+    setActiveSide(side);
     const { x, y } = getMouseMm(e);
 
-    // Check resize handles (4 corners + 4 edges)
+    // Check resize handles (4 corners + 4 edges) for the current side
     if (selectedRegionId) {
-      const region = config.regions.find((r) => r.id === selectedRegionId);
+      const region = config.regions.find((r) => r.id === selectedRegionId && r.side === side);
       if (region) {
         const handles = [
           { name: "nw", x: region.x, y: region.y },
@@ -295,9 +372,10 @@ export default function SplitWorkspace() {
       }
     }
 
-    // Check existing regions
+    // Check existing regions on this side
     const clickedRegion = [...config.regions]
       .reverse()
+      .filter((r) => r.side === side)
       .find((r) => x >= r.x && x <= r.x + r.widthMm && y >= r.y && y <= r.y + regionHeightMm(r));
     if (clickedRegion) {
       if (selectedRegionId === clickedRegion.id) {
@@ -311,11 +389,12 @@ export default function SplitWorkspace() {
     }
 
     // Start drawing — must begin inside the green dotted padding region
-    const startSnap = snapToPadding(x, y);
-    if (!isInsidePadding(startSnap.x, startSnap.y)) return;
+    const startSnap = snapToPadding(x, y, side);
+    if (!isInsidePadding(startSnap.x, startSnap.y, side)) return;
     setSelectedRegionId(null);
     setDrag({
       type: "draw",
+      side,
       startX: startSnap.x,
       startY: startSnap.y,
       currentX: startSnap.x,
@@ -332,7 +411,7 @@ export default function SplitWorkspace() {
     const { x, y } = getMouseMm(e);
 
     if (drag.type === "draw") {
-      const endSnap = snapToPadding(x, y);
+      const endSnap = snapToPadding(x, y, drag.side);
       setDrag({ ...drag, currentX: endSnap.x, currentY: endSnap.y, endSnap });
     } else if (drag.type === "move") {
       const region = config.regions.find((r) => r.id === drag.regionId);
@@ -348,11 +427,12 @@ export default function SplitWorkspace() {
       }
       nx = snapValue(nx, snapTargetsX);
       ny = snapValue(ny, snapTargetsY);
-      // Keep the entire region inside the green dotted padding rectangle
-      const maxMoveX = paddingRect.x + paddingRect.w - region.widthMm;
-      const maxMoveY = paddingRect.y + paddingRect.h - region.heightMm;
-      const cx = maxMoveX >= paddingRect.x ? Math.max(paddingRect.x, Math.min(nx, maxMoveX)) : paddingRect.x;
-      const cy = maxMoveY >= paddingRect.y ? Math.max(paddingRect.y, Math.min(ny, maxMoveY)) : paddingRect.y;
+      // Keep the entire region inside the green dotted padding rectangle for this side
+      const pr = getPaddingRect(region.side);
+      const maxMoveX = pr.x + pr.w - region.widthMm;
+      const maxMoveY = pr.y + pr.h - region.heightMm;
+      const cx = maxMoveX >= pr.x ? Math.max(pr.x, Math.min(nx, maxMoveX)) : pr.x;
+      const cy = maxMoveY >= pr.y ? Math.max(pr.y, Math.min(ny, maxMoveY)) : pr.y;
       updateRegion(drag.regionId, { x: cx, y: cy });
     } else if (drag.type === "resize") {
       const region = config.regions.find((r) => r.id === drag.regionId);
@@ -409,7 +489,7 @@ export default function SplitWorkspace() {
         }
       }
 
-      const constrained = constrainRect(nx, ny, nw, nh);
+      const constrained = constrainRect(nx, ny, nw, nh, region.side);
       updateRegion(drag.regionId, { x: constrained.x, y: constrained.y, widthMm: constrained.w, heightMm: constrained.h });
     }
   };
@@ -423,18 +503,18 @@ export default function SplitWorkspace() {
       const h = Math.abs(d.currentY - d.startY);
 
       if (w > 3 && h > 3 && config.regions.length < MAX_REGIONS) {
-        const constrained = constrainRect(x, y, w, h);
-        addRegion(constrained.x, constrained.y, constrained.w, constrained.h);
+        const constrained = constrainRect(x, y, w, h, d.side);
+        addRegion(constrained.x, constrained.y, constrained.w, constrained.h, d.side);
       }
     }
     setDrag(null);
   };
 
-  const addRegion = (x: number, y: number, w: number, h: number) => {
+  const addRegion = (x: number, y: number, w: number, h: number, side: "front" | "back") => {
     const newRegion: SplitRegion = {
       id: generateId(),
       regionId: `R${config.regions.length + 1}`,
-      side: "front",
+      side,
       x,
       y,
       widthMm: w,
@@ -477,14 +557,21 @@ export default function SplitWorkspace() {
     if (selectedRegionId === id) setSelectedRegionId(null);
   };
 
-  const addContentSource = (type: SplitContentSource["type"]) => {
+  const addContentSource = (type: SplitContentSource["type"], regionId?: string) => {
     const newSource: SplitContentSource = {
       id: generateId(),
       type,
       label: type === "manual" ? "Manual text" : "Translation table",
       manualText: type === "manual" ? "" : undefined,
     };
-    setConfig((c) => ({ ...c, contentSources: [...c.contentSources, newSource] }));
+    setConfig((c) => {
+      const next = { ...c, contentSources: [...c.contentSources, newSource] };
+      if (regionId) {
+        next.regions = c.regions.map((r) => (r.id === regionId ? { ...r, contentSourceId: newSource.id } : r));
+      }
+      return next;
+    });
+    if (regionId) setSelectedRegionId(regionId);
   };
 
   const updateContentSource = (id: string, patch: Partial<SplitContentSource>) => {
@@ -516,6 +603,7 @@ export default function SplitWorkspace() {
         contentSources: [],
         imageData: undefined,
       }));
+      setActiveSide("front");
       setSimulation(null);
       setViewLabelIndex(0);
     } catch {
@@ -617,6 +705,7 @@ export default function SplitWorkspace() {
         })),
       });
       setSimulation(null);
+      setActiveSide("front");
       setActiveTab("editor");
     } catch {
       setMessage("Failed to load split configuration");
@@ -640,6 +729,7 @@ export default function SplitWorkspace() {
           contentSources: [],
         });
         setSelectedLayout(null);
+        setActiveSide("front");
       }
     } catch {
       setMessage("Failed to delete");
@@ -659,13 +749,251 @@ export default function SplitWorkspace() {
     });
     setSelectedLayout(null);
     setSelectedRegionId(null);
+    setActiveSide("front");
     setSimulation(null);
     setActiveTab("editor");
   };
 
   const selectedRegion = config.regions.find((r) => r.id === selectedRegionId);
 
-  const renderEditor = () => (
+  const renderEditor = () => {
+    const isDoubleSided = selectedLayout?.details?.sideType === "double";
+    const viewMode = selectedLayout?.details?.viewMode ?? "side-by-side";
+
+    const renderSvg = (side: "front" | "back", showLines = false) => {
+      const sidePadding = getPadding(side);
+      const sideImage = parseSideImage(config.imageData, side);
+      return (
+        <svg
+          key={side}
+          ref={side === "front" ? svgRef : undefined}
+          width={mmToPx(widthMm)}
+          height={mmToPx(heightMm)}
+          className={`bg-white border shadow-[var(--shadow-sm)] cursor-crosshair transition-colors ${activeSide === side ? "border-[var(--primary)]" : "border-[var(--border)]"}`}
+          onMouseDown={(e) => handleSvgMouseDown(e, side)}
+          onMouseMove={handleSvgMouseMove}
+          onMouseUp={handleSvgMouseUp}
+          onMouseLeave={handleSvgMouseUp}
+        >
+            {sideImage && showImage && (
+              <image
+                href={sideImage}
+                x={0}
+                y={0}
+                width={mmToPx(widthMm)}
+                height={mmToPx(heightMm)}
+                opacity={config.imageOpacity}
+                preserveAspectRatio="none"
+              />
+            )}
+
+            {/* Padding outline */}
+            <rect
+              x={mmToPx(sidePadding.left)}
+              y={mmToPx(sidePadding.top)}
+              width={mmToPx(widthMm - sidePadding.left - sidePadding.right)}
+              height={mmToPx(heightMm - sidePadding.top - sidePadding.bottom)}
+              fill="none"
+              stroke="#059669"
+              strokeWidth={1}
+              strokeDasharray="4,4"
+            />
+
+            {/* Overflow connection lines */}
+            {showLines &&
+              config.regions
+                .filter((r) => r.side === side && r.overflowTargetId)
+                .map((r) => {
+                  const target = config.regions.find((t) => t.regionId === r.overflowTargetId && t.side === side);
+                  if (!target) return null;
+                  const sx = r.x + r.widthMm / 2;
+                  const sy = r.y + r.heightMm;
+                  const tx = target.x + target.widthMm / 2;
+                  const ty = target.y;
+                  return (
+                    <path
+                      key={`conn-${r.id}-${target.id}`}
+                      d={getBezierConnectionPath(sx, sy, tx, ty)}
+                      fill="none"
+                      stroke="#6366f1"
+                      strokeWidth={2.5}
+                      opacity={0.8}
+                      pointerEvents="none"
+                    />
+                  );
+                })}
+
+            {/* Regions */}
+            {config.regions
+              .filter((r) => r.side === side)
+              .map((r) => (
+                <g key={r.id}>
+                  <rect
+                    x={mmToPx(r.x)}
+                    y={mmToPx(r.y)}
+                    width={mmToPx(r.widthMm)}
+                    height={mmToPx(r.heightMm)}
+                    fill={selectedRegionId === r.id ? "rgba(30,58,95,0.1)" : r.type === "fixed" ? "rgba(37,99,235,0.08)" : "rgba(5,150,105,0.08)"}
+                    stroke={selectedRegionId === r.id ? "#1E3A5F" : r.type === "fixed" ? "#2563EB" : "#059669"}
+                    strokeWidth={selectedRegionId === r.id ? 2 : 1}
+                  />
+                  <text
+                    x={mmToPx(r.x + r.widthMm / 2)}
+                    y={mmToPx(r.y + r.heightMm / 2)}
+                    textAnchor="middle"
+                    dominantBaseline="middle"
+                    fontSize={Math.max(10, mmToPx(Math.min(r.widthMm, r.heightMm) * 0.15))}
+                    fill={r.type === "fixed" ? "#2563EB" : "#059669"}
+                  >
+                    {r.regionId}
+                  </text>
+                  {selectedRegionId === r.id && (
+                    <>
+                      {[
+                        { name: "nw", x: r.x, y: r.y },
+                        { name: "n", x: r.x + r.widthMm / 2, y: r.y },
+                        { name: "ne", x: r.x + r.widthMm, y: r.y },
+                        { name: "w", x: r.x, y: r.y + r.heightMm / 2 },
+                        { name: "e", x: r.x + r.widthMm, y: r.y + r.heightMm / 2 },
+                        { name: "sw", x: r.x, y: r.y + r.heightMm },
+                        { name: "s", x: r.x + r.widthMm / 2, y: r.y + r.heightMm },
+                        { name: "se", x: r.x + r.widthMm, y: r.y + r.heightMm },
+                      ].map((h) => {
+                        const isHovered = hoveredHandle === h.name;
+                        return (
+                          <g key={h.name}>
+                            <rect
+                              x={mmToPx(h.x) - 8}
+                              y={mmToPx(h.y) - 8}
+                              width={16}
+                              height={16}
+                              fill="transparent"
+                              onMouseEnter={() => setHoveredHandle(h.name)}
+                              onMouseLeave={() => setHoveredHandle(null)}
+                              style={{ cursor: "pointer" }}
+                            />
+                            <rect
+                              x={mmToPx(h.x) - 4}
+                              y={mmToPx(h.y) - 4}
+                              width={8}
+                              height={8}
+                              fill={isHovered ? "#3B82F6" : "#1E3A5F"}
+                              pointerEvents="none"
+                            />
+                          </g>
+                        );
+                      })}
+                    </>
+                  )}
+                </g>
+              ))}
+
+            {/* Drawing preview */}
+            {drag?.type === "draw" && drag.side === side && (
+              <>
+                <rect
+                  x={mmToPx(Math.min(drag.startX, drag.currentX))}
+                  y={mmToPx(Math.min(drag.startY, drag.currentY))}
+                  width={mmToPx(Math.abs(drag.currentX - drag.startX))}
+                  height={mmToPx(Math.abs(drag.currentY - drag.startY))}
+                  fill="rgba(30,58,95,0.1)"
+                  stroke="#1E3A5F"
+                  strokeDasharray="4,4"
+                />
+                {drag.startSnap.kind === "corner" && (
+                  <circle cx={mmToPx(drag.startSnap.x)} cy={mmToPx(drag.startSnap.y)} r={5} fill="#FACC15" stroke="#B45309" strokeWidth={1} />
+                )}
+                {drag.endSnap.kind && (
+                  <circle
+                    cx={mmToPx(drag.endSnap.x)}
+                    cy={mmToPx(drag.endSnap.y)}
+                    r={5}
+                    fill={drag.endSnap.kind === "corner" ? "#FACC15" : "#EF4444"}
+                    stroke={drag.endSnap.kind === "corner" ? "#B45309" : "#991B1B"}
+                    strokeWidth={1}
+                  />
+                )}
+              </>
+            )}
+          </svg>
+      );
+    };
+
+    const renderCanvasCard = (side: "front" | "back") => {
+      const sideImage = parseSideImage(config.imageData, side);
+      return (
+        <div
+          key={side}
+          className={`space-y-2 p-2 rounded-lg border-2 transition-colors ${activeSide === side ? "border-[var(--primary)] bg-[var(--primary)]/5" : "border-transparent hover:border-[var(--border)]"}`}
+          onClick={() => setActiveSide(side)}
+        >
+          <div className="flex items-center justify-between">
+            <span className="text-sm font-medium text-[var(--foreground)]/80 capitalize">{side} Label</span>
+            {sideImage && (
+              <button
+                onClick={(e) => {
+                  e.stopPropagation();
+                  setSideImage(side, undefined);
+                }}
+                className="text-xs text-[var(--destructive)] cursor-pointer"
+              >
+                Remove image
+              </button>
+            )}
+          </div>
+          {renderSvg(side, true)}
+        </div>
+      );
+    };
+
+    const renderConnectionOverlay = () => {
+      const svgW = mmToPx(widthMm);
+      const svgH = mmToPx(heightMm);
+      const gap = 16;
+      const isTopBottom = viewMode === "top-bottom";
+      const overlayW = isTopBottom ? svgW : 2 * svgW + gap;
+      const overlayH = isTopBottom ? 2 * svgH + gap : svgH;
+
+      const sideOrigin = (side: "front" | "back") => {
+        if (side === "front") return { x: 0, y: 0 };
+        return isTopBottom ? { x: 0, y: svgH + gap } : { x: svgW + gap, y: 0 };
+      };
+
+      const getOverlayBezierPath = (sx: number, sy: number, tx: number, ty: number) => {
+        const distance = Math.hypot(tx - sx, ty - sy);
+        const offset = Math.max(20, distance * 0.35);
+        return `M ${sx} ${sy} C ${sx} ${sy + offset}, ${tx} ${ty - offset}, ${tx} ${ty}`;
+      };
+
+      return (
+        <svg className="absolute top-0 left-0 pointer-events-none" width={overlayW} height={overlayH}>
+          {config.regions
+            .filter((r) => r.overflowTargetId)
+            .map((r) => {
+              const target = config.regions.find((t) => t.regionId === r.overflowTargetId);
+              if (!target) return null;
+              const sOrigin = sideOrigin(r.side);
+              const tOrigin = sideOrigin(target.side);
+              const sx = sOrigin.x + mmToPx(r.x + r.widthMm / 2);
+              const sy = sOrigin.y + mmToPx(r.y + r.heightMm);
+              const tx = tOrigin.x + mmToPx(target.x + target.widthMm / 2);
+              const ty = tOrigin.y + mmToPx(target.y);
+              return (
+                <path
+                  key={`overlay-conn-${r.id}-${target.id}`}
+                  d={getOverlayBezierPath(sx, sy, tx, ty)}
+                  fill="none"
+                  stroke="#6366f1"
+                  strokeWidth={2.5}
+                  opacity={0.8}
+                />
+              );
+            })}
+        </svg>
+      );
+    };
+
+    return (
     <div className="space-y-6">
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
         <div className="lg:col-span-2 space-y-4">
@@ -741,7 +1069,7 @@ export default function SplitWorkspace() {
                   onClick={() => fileInputRef.current?.click()}
                   className="px-3 py-1.5 border border-[var(--border)] rounded-lg text-xs cursor-pointer"
                 >
-                  Upload image
+                  Upload image to {activeSide}
                 </button>
                 <input
                   ref={fileInputRef}
@@ -752,144 +1080,50 @@ export default function SplitWorkspace() {
                 />
               </div>
 
-              <svg
-                ref={svgRef}
-                width={mmToPx(widthMm)}
-                height={mmToPx(heightMm)}
-                className="bg-white border border-[var(--border)] shadow-[var(--shadow-sm)] cursor-crosshair"
-                onMouseDown={handleSvgMouseDown}
-                onMouseMove={handleSvgMouseMove}
-                onMouseUp={handleSvgMouseUp}
-                onMouseLeave={handleSvgMouseUp}
-              >
-                {config.imageData && showImage && (
-                  <image
-                    href={config.imageData}
-                    x={0}
-                    y={0}
-                    width={mmToPx(widthMm)}
-                    height={mmToPx(heightMm)}
-                    opacity={config.imageOpacity}
-                    preserveAspectRatio="none"
-                  />
-                )}
-
-                {/* Padding outline */}
-                <rect
-                  x={mmToPx(padding.left)}
-                  y={mmToPx(padding.top)}
-                  width={mmToPx(widthMm - padding.left - padding.right)}
-                  height={mmToPx(heightMm - padding.top - padding.bottom)}
-                  fill="none"
-                  stroke="#059669"
-                  strokeWidth={1}
-                  strokeDasharray="4,4"
-                />
-
-                {/* Regions */}
-                {config.regions.map((r) => (
-                  <g key={r.id}>
-                    <rect
-                      x={mmToPx(r.x)}
-                      y={mmToPx(r.y)}
-                      width={mmToPx(r.widthMm)}
-                      height={mmToPx(r.heightMm)}
-                      fill={selectedRegionId === r.id ? "rgba(30,58,95,0.1)" : r.type === "fixed" ? "rgba(37,99,235,0.08)" : "rgba(5,150,105,0.08)"}
-                      stroke={selectedRegionId === r.id ? "#1E3A5F" : r.type === "fixed" ? "#2563EB" : "#059669"}
-                      strokeWidth={selectedRegionId === r.id ? 2 : 1}
-                    />
-                    <text
-                      x={mmToPx(r.x + r.widthMm / 2)}
-                      y={mmToPx(r.y + r.heightMm / 2)}
-                      textAnchor="middle"
-                      dominantBaseline="middle"
-                      fontSize={Math.max(10, mmToPx(Math.min(r.widthMm, r.heightMm) * 0.15))}
-                      fill={r.type === "fixed" ? "#2563EB" : "#059669"}
-                    >
-                      {r.regionId} ({r.side})
-                    </text>
-                    {selectedRegionId === r.id && (
-                      <>
-                        {[
-                          { name: "nw", x: r.x, y: r.y },
-                          { name: "n", x: r.x + r.widthMm / 2, y: r.y },
-                          { name: "ne", x: r.x + r.widthMm, y: r.y },
-                          { name: "w", x: r.x, y: r.y + r.heightMm / 2 },
-                          { name: "e", x: r.x + r.widthMm, y: r.y + r.heightMm / 2 },
-                          { name: "sw", x: r.x, y: r.y + r.heightMm },
-                          { name: "s", x: r.x + r.widthMm / 2, y: r.y + r.heightMm },
-                          { name: "se", x: r.x + r.widthMm, y: r.y + r.heightMm },
-                        ].map((h) => {
-                          const isHovered = hoveredHandle === h.name;
-                          return (
-                            <g key={h.name}>
-                              {/* Larger invisible hit area for easier hover/click */}
-                              <rect
-                                x={mmToPx(h.x) - 8}
-                                y={mmToPx(h.y) - 8}
-                                width={16}
-                                height={16}
-                                fill="transparent"
-                                onMouseEnter={() => setHoveredHandle(h.name)}
-                                onMouseLeave={() => setHoveredHandle(null)}
-                                style={{ cursor: "pointer" }}
-                              />
-                              {/* Visible handle */}
-                              <rect
-                                x={mmToPx(h.x) - 4}
-                                y={mmToPx(h.y) - 4}
-                                width={8}
-                                height={8}
-                                fill={isHovered ? "#3B82F6" : "#1E3A5F"}
-                                pointerEvents="none"
-                              />
-                            </g>
-                          );
-                        })}
-                      </>
-                    )}
-                  </g>
-                ))}
-
-                {/* Drawing preview */}
-                {drag?.type === "draw" && (
-                  <>
-                    <rect
-                      x={mmToPx(Math.min(drag.startX, drag.currentX))}
-                      y={mmToPx(Math.min(drag.startY, drag.currentY))}
-                      width={mmToPx(Math.abs(drag.currentX - drag.startX))}
-                      height={mmToPx(Math.abs(drag.currentY - drag.startY))}
-                      fill="rgba(30,58,95,0.1)"
-                      stroke="#1E3A5F"
-                      strokeDasharray="4,4"
-                    />
-                    {/* Start dot: yellow when snapped to a corner */}
-                    {drag.startSnap.kind === "corner" && (
-                      <circle cx={mmToPx(drag.startSnap.x)} cy={mmToPx(drag.startSnap.y)} r={5} fill="#FACC15" stroke="#B45309" strokeWidth={1} />
-                    )}
-                    {/* End dot: red on edge, yellow on corner */}
-                    {drag.endSnap.kind && (
-                      <circle
-                        cx={mmToPx(drag.endSnap.x)}
-                        cy={mmToPx(drag.endSnap.y)}
-                        r={5}
-                        fill={drag.endSnap.kind === "corner" ? "#FACC15" : "#EF4444"}
-                        stroke={drag.endSnap.kind === "corner" ? "#B45309" : "#991B1B"}
-                        strokeWidth={1}
-                      />
-                    )}
-                  </>
-                )}
-              </svg>
+              {isDoubleSided ? (
+                <div className="space-y-2">
+                  <div className={`flex ${viewMode === "side-by-side" ? "flex-row" : "flex-col"} gap-4 px-2`}>
+                    {(["front", "back"] as const).map((side) => {
+                      const sideImage = parseSideImage(config.imageData, side);
+                      return (
+                        <div
+                          key={side}
+                          className={`flex-1 flex items-center justify-between ${activeSide === side ? "text-[var(--primary)]" : "text-[var(--foreground)]/80"}`}
+                        >
+                          <span className="text-sm font-medium capitalize">{side} Label</span>
+                          {sideImage && (
+                            <button
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                setSideImage(side, undefined);
+                              }}
+                              className="text-xs text-[var(--destructive)] cursor-pointer"
+                            >
+                              Remove image
+                            </button>
+                          )}
+                        </div>
+                      );
+                    })}
+                  </div>
+                  <div className={`relative flex ${viewMode === "side-by-side" ? "flex-row" : "flex-col"} gap-4`}>
+                    {renderSvg("front")}
+                    {renderSvg("back")}
+                    {renderConnectionOverlay()}
+                  </div>
+                </div>
+              ) : (
+                renderCanvasCard("front")
+              )}
 
               <div className="text-xs text-[var(--foreground)]/50">
-                Drag inside the green dotted region to draw regions. Click a region to select it and show resize handles; drag a selected region to pan it (kept inside the green dotted region). Max {MAX_REGIONS} regions (R1-R10).
+                Click a label to activate it (highlighted border). Paste/upload an image onto the active label. Drag inside the green dotted region to draw regions on the active side. Click a region to select it and show resize handles; drag a selected region to pan it. Max {MAX_REGIONS} regions (R1-R10).
               </div>
             </>
           )}
         </div>
 
-        <div className="space-y-4">
+        <div className="space-y-4 lg:sticky lg:top-6 lg:self-start lg:max-h-[calc(100vh-3rem)] lg:overflow-y-auto">
           {selectedRegion && (
             <div className="bg-white border border-[var(--border)] rounded-xl p-4 space-y-3">
               <div className="flex items-center justify-between">
@@ -933,7 +1167,7 @@ export default function SplitWorkspace() {
                   >
                     <option value="">None (create new label)</option>
                     {config.regions
-                      .filter((r) => r.id !== selectedRegion.id)
+                      .filter((r) => r.id !== selectedRegion.id && (isValidOverflowTarget(selectedRegion, r) || r.regionId === selectedRegion.overflowTargetId))
                       .map((r) => (
                         <option key={r.id} value={r.regionId}>
                           {r.regionId} ({r.side})
@@ -943,7 +1177,8 @@ export default function SplitWorkspace() {
                 </div>
               )}
               <div>
-                <label className="text-xs text-[var(--foreground)]/60">Content source</label>
+                <label className="text-xs text-[var(--foreground)]/60">Content source for {selectedRegion.regionId}</label>
+                <p className="text-xs text-[var(--foreground)]/40 mb-1">Pick one shared source for this region.</p>
                 <select
                   value={selectedRegion.contentSourceId || ""}
                   onChange={(e) => updateRegion(selectedRegion.id, { contentSourceId: e.target.value || undefined })}
@@ -967,7 +1202,12 @@ export default function SplitWorkspace() {
           )}
 
           <div className="bg-white border border-[var(--border)] rounded-xl p-4 space-y-3">
-            <h3 className="font-semibold text-sm">Content Sources</h3>
+            <div>
+              <h3 className="font-semibold text-sm">Shared Content Sources</h3>
+              <p className="text-xs text-[var(--foreground)]/50 mt-0.5">
+                Create reusable text blocks here. Each region can be assigned one source.
+              </p>
+            </div>
             {config.contentSources.map((s) => (
               <div key={s.id} className="border border-[var(--border)] rounded-lg p-2 space-y-2">
                 <div className="flex items-center justify-between">
@@ -1006,18 +1246,21 @@ export default function SplitWorkspace() {
             ))}
             <div className="flex gap-2">
               <button
-                onClick={() => addContentSource("manual")}
+                onClick={() => addContentSource("manual", selectedRegionId ?? undefined)}
                 className="px-3 py-1.5 border border-[var(--border)] rounded-lg text-xs cursor-pointer"
               >
-                + Manual text
+                + Manual text{selectedRegionId && " for selected region"}
               </button>
               <button
-                onClick={() => addContentSource("translation")}
+                onClick={() => addContentSource("translation", selectedRegionId ?? undefined)}
                 className="px-3 py-1.5 border border-[var(--border)] rounded-lg text-xs cursor-pointer"
               >
-                + Translation
+                + Translation{selectedRegionId && " for selected region"}
               </button>
             </div>
+            {!selectedRegionId && config.contentSources.length === 0 && (
+              <p className="text-xs text-[var(--foreground)]/40">Select a region first to auto-assign a new source to it.</p>
+            )}
           </div>
 
           <div className="bg-white border border-[var(--border)] rounded-xl p-4 space-y-3">
@@ -1082,65 +1325,59 @@ export default function SplitWorkspace() {
         <div className="bg-white border border-[var(--border)] rounded-xl p-4 space-y-4">
           <div className="flex items-center justify-between">
             <h3 className="font-semibold text-sm">Simulation Result</h3>
-            <div className="flex items-center gap-3">
-              <select
-                value={viewLabelIndex}
-                onChange={(e) => setViewLabelIndex(Number(e.target.value))}
-                className="px-2 py-1 border border-[var(--border)] rounded-lg text-sm"
-              >
-                {simulation.labels.map((_, idx) => (
-                  <option key={idx} value={idx}>
-                    Label {idx + 1}
-                  </option>
-                ))}
-              </select>
-              <div className="flex border border-[var(--border)] rounded-lg overflow-hidden">
-                <button
-                  onClick={() => setViewSide("front")}
-                  className={`px-3 py-1 text-xs cursor-pointer ${viewSide === "front" ? "bg-[var(--primary)] text-white" : ""}`}
-                >
-                  Front
-                </button>
-                <button
-                  onClick={() => setViewSide("back")}
-                  className={`px-3 py-1 text-xs cursor-pointer ${viewSide === "back" ? "bg-[var(--primary)] text-white" : ""}`}
-                >
-                  Back
-                </button>
-              </div>
-            </div>
+            <select
+              value={viewLabelIndex}
+              onChange={(e) => setViewLabelIndex(Number(e.target.value))}
+              className="px-2 py-1 border border-[var(--border)] rounded-lg text-sm"
+            >
+              {simulation.labels.map((_, idx) => (
+                <option key={idx} value={idx}>
+                  Label {idx + 1}
+                </option>
+              ))}
+            </select>
           </div>
 
-          <svg width={mmToPx(widthMm)} height={mmToPx(heightMm)} className="bg-white border border-[var(--border)]">
-            {simulation.labels[viewLabelIndex]?.[viewSide].map((r) => (
-              <g key={r.regionId}>
-                <rect
-                  x={mmToPx(r.x)}
-                  y={mmToPx(r.y)}
-                  width={mmToPx(r.widthMm)}
-                  height={mmToPx(r.heightMm)}
-                  fill={r.type === "fixed" ? "rgba(37,99,235,0.08)" : "rgba(5,150,105,0.08)"}
-                  stroke={r.type === "fixed" ? "#2563EB" : "#059669"}
-                />
-                <foreignObject x={mmToPx(r.x + padding.left)} y={mmToPx(r.y + padding.top)} width={mmToPx(r.widthMm - padding.left - padding.right)} height={mmToPx(r.heightMm - padding.top - padding.bottom)}>
-                  <div
-                    className="leading-tight overflow-hidden"
-                    style={{
-                      fontFamily: config.fontId ? "SplitFont, sans-serif" : "sans-serif",
-                      fontSize: Math.max(8, mmToPx(config.fontSizeMm) * 0.8),
-                    }}
-                  >
-                    {r.text.split("\n").map((line, i) => (
-                      <div key={i}>{line}</div>
+          <div className={`flex ${selectedLayout?.details?.viewMode === "top-bottom" ? "flex-col" : "flex-row"} gap-4`}>
+            {(["front", "back"] as const).map((side) => {
+              const sidePadding = getPadding(side);
+              return (
+                <div key={side} className="space-y-1">
+                  <div className="text-xs font-medium text-[var(--foreground)]/70 capitalize">{side}</div>
+                  <svg width={mmToPx(widthMm)} height={mmToPx(heightMm)} className="bg-white border border-[var(--border)]">
+                    {simulation.labels[viewLabelIndex]?.[side].map((r) => (
+                      <g key={r.regionId}>
+                        <rect
+                          x={mmToPx(r.x)}
+                          y={mmToPx(r.y)}
+                          width={mmToPx(r.widthMm)}
+                          height={mmToPx(r.heightMm)}
+                          fill={r.type === "fixed" ? "rgba(37,99,235,0.08)" : "rgba(5,150,105,0.08)"}
+                          stroke={r.type === "fixed" ? "#2563EB" : "#059669"}
+                        />
+                        <foreignObject x={mmToPx(r.x + sidePadding.left)} y={mmToPx(r.y + sidePadding.top)} width={mmToPx(r.widthMm - sidePadding.left - sidePadding.right)} height={mmToPx(r.heightMm - sidePadding.top - sidePadding.bottom)}>
+                          <div
+                            className="leading-tight overflow-hidden"
+                            style={{
+                              fontFamily: config.fontId ? "SplitFont, sans-serif" : "sans-serif",
+                              fontSize: Math.max(8, mmToPx(config.fontSizeMm) * 0.8),
+                            }}
+                          >
+                            {r.text.split("\n").map((line, i) => (
+                              <div key={i}>{line}</div>
+                            ))}
+                          </div>
+                        </foreignObject>
+                        <text x={mmToPx(r.x + r.widthMm - 2)} y={mmToPx(r.y + 8)} textAnchor="end" fontSize={10} fill={r.type === "fixed" ? "#2563EB" : "#059669"}>
+                          {r.regionId}
+                        </text>
+                      </g>
                     ))}
-                  </div>
-                </foreignObject>
-                <text x={mmToPx(r.x + r.widthMm - 2)} y={mmToPx(r.y + 8)} textAnchor="end" fontSize={10} fill={r.type === "fixed" ? "#2563EB" : "#059669"}>
-                  {r.regionId}
-                </text>
-              </g>
-            ))}
-          </svg>
+                  </svg>
+                </div>
+              );
+            })}
+          </div>
 
           {simulation.unplacedText && (
             <div className="p-3 bg-red-50 border border-red-200 rounded-lg text-sm text-[var(--destructive)]">
@@ -1178,6 +1415,7 @@ export default function SplitWorkspace() {
       )}
     </div>
   );
+};
 
   const renderConfigs = () => (
     <div className="space-y-4">

@@ -23,14 +23,6 @@ export type SimulationResult = {
   unplacedText: string;
 };
 
-function getRegionText(region: SplitRegion, sources: SplitContentSource[]): string {
-  if (!region.contentSourceId) return "";
-  const source = sources.find((s) => s.id === region.contentSourceId);
-  if (!source) return "";
-  if (source.type === "manual") return source.manualText ?? "";
-  return `[${source.label}]`;
-}
-
 function wrapText(
   text: string,
   maxWidth: number,
@@ -40,7 +32,7 @@ function wrapText(
   allowSplit: boolean,
   connectionText: string
 ): { keep: string; remainder: string; splitAtWord: boolean } {
-  const words = text.split(/(\s+)/).filter((w) => w.length > 0);
+  const words = text.trim().split(/\s+/).filter((w) => w.length > 0);
   const maxCharsPerLine = Math.max(1, Math.floor(maxWidth / charWidth));
   const maxLines = Math.max(1, Math.floor(maxHeight / lineHeight));
 
@@ -49,48 +41,77 @@ function wrapText(
   let remainder = "";
   let splitAtWord = false;
 
+  const pushCurrentLine = () => {
+    if (!currentLine) return true;
+    if (keepLines.length < maxLines) {
+      keepLines.push(currentLine.trim());
+      currentLine = "";
+      return true;
+    }
+    return false;
+  };
+
+  const connectionLen = connectionText.length;
+  const splitChunkSize = Math.max(1, maxCharsPerLine - connectionLen);
+
   for (let i = 0; i < words.length; i++) {
     const word = words[i];
-    const testLine = currentLine + word;
 
+    // Word itself is too long for one line
+    if (word.length > maxCharsPerLine) {
+      if (!allowSplit) {
+        remainder = words.slice(i).join(" ");
+        break;
+      }
+      if (!pushCurrentLine()) {
+        remainder = words.slice(i).join(" ");
+        break;
+      }
+      let w = word;
+      while (w.length > maxCharsPerLine) {
+        if (keepLines.length >= maxLines) {
+          remainder = w + (i + 1 < words.length ? " " + words.slice(i + 1).join(" ") : "");
+          break;
+        }
+        keepLines.push(w.slice(0, splitChunkSize) + connectionText);
+        w = w.slice(splitChunkSize);
+        splitAtWord = true;
+      }
+      if (remainder) break;
+      currentLine = w;
+      continue;
+    }
+
+    const testLine = currentLine ? currentLine + " " + word : word;
     if (testLine.length <= maxCharsPerLine) {
       currentLine = testLine;
     } else {
-      if (currentLine) {
-        if (keepLines.length < maxLines) {
-          keepLines.push(currentLine.trim());
-          currentLine = word;
-        } else {
-          remainder = words.slice(i).join("");
-          break;
-        }
-      } else {
-        // Word itself is too long for line
-        if (allowSplit) {
-          const spaceLeft = maxCharsPerLine;
-          const part = word.slice(0, spaceLeft);
-          keepLines.push(part + connectionText);
-          currentLine = word.slice(spaceLeft);
-          splitAtWord = true;
-        } else {
-          remainder = words.slice(i).join("");
-          break;
-        }
+      if (!pushCurrentLine()) {
+        remainder = words.slice(i).join(" ");
+        break;
       }
+      currentLine = word;
     }
   }
 
-  if (currentLine && keepLines.length < maxLines) {
-    keepLines.push(currentLine.trim());
-    currentLine = "";
-  }
-
-  if (currentLine) {
-    remainder = currentLine + (remainder ? " " + remainder : "");
+  if (!remainder && currentLine) {
+    if (!pushCurrentLine()) {
+      remainder = currentLine;
+    }
   }
 
   return { keep: keepLines.join("\n"), remainder: remainder.trim(), splitAtWord };
 }
+
+function getRegionText(region: SplitRegion, sources: SplitContentSource[]): string {
+  if (!region.contentSourceId) return "";
+  const source = sources.find((s) => s.id === region.contentSourceId);
+  if (!source) return "";
+  if (source.type === "manual") return source.manualText ?? "";
+  return `[${source.label}]`;
+}
+
+
 
 export function simulateOverflow(
   config: SplitConfiguration,
@@ -99,8 +120,10 @@ export function simulateOverflow(
   padding: { top: number; right: number; bottom: number; left: number }
 ): SimulationResult {
   const fontSizeMm = config.fontSizeMm || 3;
-  const charWidth = fontSizeMm * 0.5;
-  const lineHeight = fontSizeMm * 1.4;
+  // Match the rendered font size used in the simulation view (0.8 scaling factor).
+  const effectiveFontSizeMm = fontSizeMm * 0.8;
+  const charWidth = effectiveFontSizeMm * 0.4;
+  const lineHeight = effectiveFontSizeMm;
 
   const labels: SimulatedLabel[] = [];
 
@@ -109,6 +132,72 @@ export function simulateOverflow(
   for (const region of config.regions) {
     remainingByRegion[region.regionId] = getRegionText(region, config.contentSources);
   }
+
+  const regionById = new Map(config.regions.map((r) => [r.regionId, r]));
+
+  const spatialSort = (a: SplitRegion, b: SplitRegion) => {
+    if (a.side !== b.side) return a.side === "front" ? -1 : 1;
+    if (a.y !== b.y) return a.y - b.y;
+    return a.x - b.x;
+  };
+
+  // Topological sort: a region is processed before its overflow target so text
+  // can flow through the chain within a single label.
+  const getSortedRegions = () => {
+    const inDegree: Record<string, number> = {};
+    config.regions.forEach((r) => {
+      inDegree[r.regionId] = 0;
+    });
+    config.regions.forEach((r) => {
+      if (r.overflowTargetId && regionById.has(r.overflowTargetId)) {
+        inDegree[r.overflowTargetId]++;
+      }
+    });
+
+    const sorted: SplitRegion[] = [];
+    const processed = new Set<string>();
+    while (sorted.length < config.regions.length) {
+      const available = config.regions
+        .filter((r) => !processed.has(r.regionId) && inDegree[r.regionId] === 0)
+        .sort(spatialSort);
+      if (available.length === 0) break;
+      const next = available[0];
+      sorted.push(next);
+      processed.add(next.regionId);
+      if (next.overflowTargetId && regionById.has(next.overflowTargetId)) {
+        inDegree[next.overflowTargetId]--;
+      }
+    }
+    config.regions.forEach((r) => {
+      if (!processed.has(r.regionId)) sorted.push(r);
+    });
+    return sorted;
+  };
+
+  // For each overflow chain, find its start (no incoming) and end (no outgoing).
+  // After a label, the remainder at the end moves back to the start so the next
+  // physical label continues the chain from the beginning.
+  const getChainStartsAndEnds = () => {
+    const hasIncoming = new Set(
+      config.regions.filter((r) => r.overflowTargetId).map((r) => r.overflowTargetId)
+    );
+    const starts = config.regions.filter((r) => !hasIncoming.has(r.regionId)).sort(spatialSort);
+    const ends: SplitRegion[] = [];
+    const visited = new Set<string>();
+    const follow = (r: SplitRegion) => {
+      if (visited.has(r.regionId)) return;
+      visited.add(r.regionId);
+      if (!r.overflowTargetId || !regionById.has(r.overflowTargetId)) {
+        ends.push(r);
+        return;
+      }
+      follow(regionById.get(r.overflowTargetId)!);
+    };
+    starts.forEach(follow);
+    return { starts, ends };
+  };
+
+  const sortedRegions = getSortedRegions();
 
   let safetyCounter = 0;
   const maxLabels = 100;
@@ -124,13 +213,6 @@ export function simulateOverflow(
 
     let hasOverflow = false;
     let anyContentPlaced = false;
-
-    // Process regions in order (left-to-right, top-to-bottom, front before back)
-    const sortedRegions = [...config.regions].sort((a, b) => {
-      if (a.side !== b.side) return a.side === "front" ? -1 : 1;
-      if (a.y !== b.y) return a.y - b.y;
-      return a.x - b.x;
-    });
 
     for (const region of sortedRegions) {
       const text = remainingByRegion[region.regionId] || "";
@@ -152,30 +234,39 @@ export function simulateOverflow(
       if (region.type === "fixed") {
         simulatedRegion.text = text;
         remainingByRegion[region.regionId] = "";
-      } else {
-        if (text && availableWidth > 0 && availableHeight > 0) {
-          const { keep, remainder } = wrapText(
-            text,
-            availableWidth,
-            availableHeight,
-            charWidth,
-            lineHeight,
-            config.allowSplitText,
-            config.connectionText ?? ""
-          );
-          simulatedRegion.text = keep;
-          simulatedRegion.overflowed = remainder.length > 0;
-          remainingByRegion[region.regionId] = remainder;
+      } else if (text && availableWidth > 0 && availableHeight > 0) {
+        const { keep, remainder, splitAtWord } = wrapText(
+          text,
+          availableWidth,
+          availableHeight,
+          charWidth,
+          lineHeight,
+          config.allowSplitText,
+          config.connectionText ?? ""
+        );
 
-          if (remainder.length > 0) {
-            hasOverflow = true;
-            if (region.overflowTargetId) {
-              const targetText = remainingByRegion[region.overflowTargetId] || "";
-              remainingByRegion[region.overflowTargetId] = targetText
-                ? targetText + " " + remainder
-                : remainder;
-              remainingByRegion[region.regionId] = "";
-            }
+        // When a word is split and flows to another region, append the
+        // connection text to the last line of this region.
+        let finalKeep = keep;
+        if (splitAtWord && region.overflowTargetId && config.connectionText) {
+          const lines = keep.split("\n");
+          if (lines.length > 0) {
+            lines[lines.length - 1] += config.connectionText;
+            finalKeep = lines.join("\n");
+          }
+        }
+
+        simulatedRegion.text = finalKeep;
+        simulatedRegion.overflowed = remainder.length > 0;
+        remainingByRegion[region.regionId] = "";
+
+        if (remainder.length > 0) {
+          hasOverflow = true;
+          if (region.overflowTargetId && regionById.has(region.overflowTargetId)) {
+            const targetText = remainingByRegion[region.overflowTargetId] || "";
+            remainingByRegion[region.overflowTargetId] = targetText
+              ? targetText + " " + remainder
+              : remainder;
           }
         }
       }
@@ -193,10 +284,23 @@ export function simulateOverflow(
 
     labels.push(currentLabel);
 
-    // Check if any overflow remains
     const hasRemaining = Object.values(remainingByRegion).some((t) => t.trim().length > 0);
     if (!hasRemaining) break;
     if (!hasOverflow && !anyContentPlaced) break;
+
+    // Move remainder from each chain's end back to its start for the next label.
+    const { starts, ends } = getChainStartsAndEnds();
+    for (let i = 0; i < starts.length; i++) {
+      const start = starts[i];
+      const end = ends[i];
+      if (end && start && end.regionId !== start.regionId) {
+        const endRemainder = remainingByRegion[end.regionId] || "";
+        if (endRemainder.trim().length > 0) {
+          remainingByRegion[start.regionId] = endRemainder;
+          remainingByRegion[end.regionId] = "";
+        }
+      }
+    }
   }
 
   const unplacedText = Object.values(remainingByRegion)
