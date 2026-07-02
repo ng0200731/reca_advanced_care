@@ -120,10 +120,12 @@ export function simulateOverflow(
   padding: { top: number; right: number; bottom: number; left: number }
 ): SimulationResult {
   const fontSizeMm = config.fontSizeMm || 3;
-  // Match the rendered font size used in the simulation view (0.8 scaling factor).
-  const effectiveFontSizeMm = fontSizeMm * 0.8;
-  const charWidth = effectiveFontSizeMm * 0.4;
-  const lineHeight = effectiveFontSizeMm;
+  // Match rendered text metrics: font is rendered at fontSize * 0.8 with
+  // leading-tight (1.25 line-height). Add a small vertical safety margin
+  // so text is never clipped at the bottom of a region.
+  const renderedFontSizeMm = fontSizeMm * 0.8;
+  const charWidth = renderedFontSizeMm * 0.5;
+  const lineHeight = renderedFontSizeMm * 1.25 * 1.02;
 
   const labels: SimulatedLabel[] = [];
 
