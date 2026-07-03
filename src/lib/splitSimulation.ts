@@ -291,29 +291,16 @@ export function simulateOverflow(
     labels.push(currentLabel);
 
     const hasRemaining = Object.values(remainingByRegion).some((t) => t.trim().length > 0);
-    console.log(`[splitSimulation] label ${labelIndex} done`, {
-      hasRemaining,
-      hasOverflow,
-      anyContentPlaced,
-      remaining: Object.fromEntries(
-        Object.entries(remainingByRegion).map(([k, v]) => [k, v.slice(0, 80) + (v.length > 80 ? "..." : "")])
-      ),
-    });
     if (!hasRemaining) break;
     if (!hasOverflow && !anyContentPlaced) break;
 
     // Move remainder from each chain's end back to its start for the next label.
     const { starts, ends } = getChainStartsAndEnds();
-    console.log(`[splitSimulation] chains`, {
-      starts: starts.map((r) => r.regionId),
-      ends: ends.map((r) => r.regionId),
-    });
     for (let i = 0; i < starts.length; i++) {
       const start = starts[i];
       const end = ends[i];
       if (end && start && end.regionId !== start.regionId) {
         const endRemainder = remainingByRegion[end.regionId] || "";
-        console.log(`[splitSimulation] move ${end.regionId} -> ${start.regionId}:`, endRemainder.slice(0, 80));
         if (endRemainder.trim().length > 0) {
           remainingByRegion[start.regionId] = endRemainder;
           remainingByRegion[end.regionId] = "";
@@ -325,8 +312,6 @@ export function simulateOverflow(
   const unplacedText = Object.values(remainingByRegion)
     .filter((t) => t.trim().length > 0)
     .join("\n");
-
-  console.log("[splitSimulation] result", { labelCount: labels.length, unplacedLength: unplacedText.length });
 
   return { labels, unplacedText };
 }

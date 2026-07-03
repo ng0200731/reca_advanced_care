@@ -1,8 +1,9 @@
 "use client";
 
-import { useEffect, useState, useRef, useCallback, useMemo } from "react";
+import React, { useEffect, useState, useRef, useCallback, useMemo } from "react";
 import type { SplitConfiguration, SplitRegion, SplitContentSource } from "@/lib/types";
 import { simulateOverflow, applyFixedContentOption } from "@/lib/splitSimulation";
+import { jsPDF } from "jspdf";
 
 type SavedLayout = {
   id: string;
@@ -97,7 +98,15 @@ export default function SplitWorkspace() {
   const [showImage, setShowImage] = useState(true);
   const [simulation, setSimulation] = useState<ReturnType<typeof simulateOverflow> | null>(null);
   const [showFixedDialog, setShowFixedDialog] = useState(false);
+  const [showSimulationModal, setShowSimulationModal] = useState(false);
+  const [showExportMenu, setShowExportMenu] = useState(false);
+  const [exporting, setExporting] = useState(false);
+  const [expandedSections, setExpandedSections] = useState<Record<string, boolean>>({});
+  const [simViewMode, setSimViewMode] = useState<"side-by-side" | "top-bottom">("side-by-side");
   const [viewLabelIndex, setViewLabelIndex] = useState(0);
+  const [simScale, setSimScale] = useState(1);
+  const [simPan, setSimPan] = useState({ x: 0, y: 0 });
+  const simDragRef = useRef<{ active: boolean; startX: number; startY: number; panX: number; panY: number } | null>(null);
 
   const svgRef = useRef<SVGSVGElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -216,6 +225,18 @@ export default function SplitWorkspace() {
     return () => window.removeEventListener("paste", handlePaste);
   }, [loadImageFile]);
 
+  useEffect(() => {
+    if (!showExportMenu) return;
+    const handleClickOutside = () => setShowExportMenu(false);
+    const id = setTimeout(() => {
+      window.addEventListener("click", handleClickOutside);
+    }, 0);
+    return () => {
+      clearTimeout(id);
+      window.removeEventListener("click", handleClickOutside);
+    };
+  }, [showExportMenu]);
+
   const mmToPx = (mm: number) => mm * scale;
   const pxToMm = (px: number) => px / scale;
 
@@ -250,6 +271,16 @@ export default function SplitWorkspace() {
     const distance = Math.hypot(tx - sx, ty - sy);
     const offset = Math.max(20 / scale, distance * 0.35);
     return `M ${mmToPx(sx)} ${mmToPx(sy)} C ${mmToPx(sx)} ${mmToPx(sy + offset)}, ${mmToPx(tx)} ${mmToPx(ty - offset)}, ${mmToPx(tx)} ${mmToPx(ty)}`;
+  };
+
+  const getPathTotalLength = (sx: number, sy: number, tx: number, ty: number) => {
+    // Approximate bezier length
+    const p0 = { x: mmToPx(sx), y: mmToPx(sy) };
+    const p1 = { x: mmToPx(sx), y: mmToPx(sy + Math.max(20 / scale, Math.hypot(tx - sx, ty - sy) * 0.35)) };
+    const p2 = { x: mmToPx(tx), y: mmToPx(ty - Math.max(20 / scale, Math.hypot(tx - sx, ty - sy) * 0.35)) };
+    const p3 = { x: mmToPx(tx), y: mmToPx(ty) };
+    // Simple chord length approximation
+    return Math.hypot(p3.x - p0.x, p3.y - p0.y) * 1.2;
   };
 
   const wouldCreateOverflowCycle = (sourceId: string, targetRegionId: string) => {
@@ -558,10 +589,13 @@ export default function SplitWorkspace() {
   };
 
   const addContentSource = (type: SplitContentSource["type"], regionId?: string) => {
+    const defaultLabel = type === "manual" ? "Manual text" : "Translation table";
+    const customLabel = prompt(`Enter a name for this ${type === "manual" ? "manual text" : "translation"}:`, defaultLabel);
+    if (!customLabel) return; // User cancelled
     const newSource: SplitContentSource = {
       id: generateId(),
       type,
-      label: type === "manual" ? "Manual text" : "Translation table",
+      label: customLabel.trim() || defaultLabel,
       manualText: type === "manual" ? "" : undefined,
     };
     setConfig((c) => {
@@ -602,6 +636,7 @@ export default function SplitWorkspace() {
         regions: [],
         contentSources: [],
         imageData: undefined,
+        // Preserve font selection
       }));
       setActiveSide("front");
       setSimulation(null);
@@ -620,6 +655,7 @@ export default function SplitWorkspace() {
       setSimulation(result);
     } else {
       setSimulation(result);
+      setShowSimulationModal(true);
     }
   };
 
@@ -629,6 +665,417 @@ export default function SplitWorkspace() {
     const final = applyFixedContentOption(simulation, fixedRegions, config.contentSources, option);
     setSimulation(final);
     setShowFixedDialog(false);
+    setShowSimulationModal(true);
+  };
+
+  const handleSimMouseDown = (e: React.MouseEvent) => {
+    simDragRef.current = {
+      active: true,
+      startX: e.clientX,
+      startY: e.clientY,
+      panX: simPan.x,
+      panY: simPan.y,
+    };
+  };
+
+  const handleSimMouseMove = (e: React.MouseEvent) => {
+    if (!simDragRef.current?.active) return;
+    const dx = e.clientX - simDragRef.current.startX;
+    const dy = e.clientY - simDragRef.current.startY;
+    setSimPan({ x: simDragRef.current.panX + dx, y: simDragRef.current.panY + dy });
+  };
+
+  const handleSimMouseUp = () => {
+    if (simDragRef.current) simDragRef.current.active = false;
+  };
+
+  const handleSimWheel = (e: React.WheelEvent) => {
+    e.preventDefault();
+    const delta = e.deltaY > 0 ? -0.1 : 0.1;
+    setSimScale((s) => Math.max(0.25, Math.min(3, s + delta)));
+  };
+
+  const resetSimView = () => {
+    setSimScale(1);
+    setSimPan({ x: 0, y: 0 });
+  };
+
+  const exportToSVG = (): string => {
+    if (!simulation || !selectedLayout?.details) return "";
+    const isSideBySide = simViewMode === "side-by-side";
+    const sideGap = 24;
+    const labelGap = 40;
+    const headerHeight = 25;
+    const labelInnerWidth = mmToPx(widthMm) * 2 + sideGap;
+    const labelInnerHeight = mmToPx(heightMm);
+
+    // Always render front and back horizontally within each label, regardless of
+    // overall layout mode (side-by-side or top-bottom).
+    const svgWidth = isSideBySide
+      ? simulation.labels.length * (labelInnerWidth) + (simulation.labels.length - 1) * labelGap
+      : labelInnerWidth;
+    const svgHeight = isSideBySide
+      ? headerHeight + labelInnerHeight
+      : simulation.labels.length * (headerHeight + labelInnerHeight) + (simulation.labels.length - 1) * labelGap;
+
+    let svgContent = `<svg xmlns="http://www.w3.org/2000/svg" width="${svgWidth}" height="${svgHeight}" viewBox="0 0 ${svgWidth} ${svgHeight}">`;
+    svgContent += `<defs><style>
+      text { font-family: ${config.fontId ? "SplitFont, Arial" : "Arial"}, sans-serif; }
+      .region-rect { stroke-width: 1; }
+      .region-text { font-size: 10px; }
+    </style></defs>`;
+    svgContent += `<rect x="0" y="0" width="${svgWidth}" height="${svgHeight}" fill="white"/>`;
+
+    simulation.labels.forEach((label, idx) => {
+      const labelWidth = labelInnerWidth;
+      const labelHeight = labelInnerHeight;
+      const labelX = isSideBySide ? idx * (labelWidth + labelGap) : 0;
+      const labelY = isSideBySide ? 0 : idx * ((headerHeight + labelHeight) + labelGap);
+
+      // Label header
+      svgContent += `<text x="${labelX + 5}" y="${labelY + 15}" font-size="14" font-weight="bold" fill="#1E3A5F">Label ${idx + 1}</text>`;
+
+      const sideY = labelY + headerHeight;
+
+      (["front", "back"] as const).forEach((side, sideIdx) => {
+        const sideX = labelX + (sideIdx === 0 ? 0 : mmToPx(widthMm) + sideGap);
+        const sidePadding = getPadding(side);
+
+        // Side label
+        svgContent += `<text x="${sideX + 5}" y="${labelY + headerHeight - 5}" font-size="11" fill="#666">${side}</text>`;
+
+        // Side background
+        svgContent += `<rect x="${sideX}" y="${sideY}" width="${mmToPx(widthMm)}" height="${mmToPx(heightMm)}" fill="white" stroke="#e5e7eb"/>`;
+
+        // Regions
+        label[side].forEach((r) => {
+          const regionColor = r.type === "fixed" ? "rgba(37,99,235,0.08)" : "rgba(5,150,98,0.08)";
+          const strokeColor = r.type === "fixed" ? "#2563EB" : "#059669";
+          svgContent += `<rect x="${sideX + mmToPx(r.x)}" y="${sideY + mmToPx(r.y)}" width="${mmToPx(r.widthMm)}" height="${mmToPx(r.heightMm)}" fill="${regionColor}" stroke="${strokeColor}" class="region-rect"/>`;
+          svgContent += `<text x="${sideX + mmToPx(r.x + r.widthMm - 2)}" y="${sideY + mmToPx(r.y + 8)}" text-anchor="end" fill="${strokeColor}" class="region-text">${r.regionId}</text>`;
+
+          // Text content - wrapped by computing approximate chars per line
+          if (r.text) {
+            const textX = sideX + mmToPx(r.x + sidePadding.left);
+            const textY = sideY + mmToPx(r.y + sidePadding.top);
+            const textWidthMm = r.widthMm - sidePadding.left - sidePadding.right;
+            const textHeightMm = r.heightMm - sidePadding.top - sidePadding.bottom;
+            const fontSizePx = Math.max(8, mmToPx(config.fontSizeMm) * 0.8);
+            const lineHeight = fontSizePx * 1.25;
+            const charWidth = fontSizePx * 0.5;
+            const maxChars = Math.max(1, Math.floor(mmToPx(textWidthMm) / charWidth));
+            const maxLines = Math.max(1, Math.floor(mmToPx(textHeightMm) / lineHeight));
+
+            const allLines: string[] = [];
+            r.text.split("\n").forEach((paragraph) => {
+              const words = paragraph.split(/\s+/);
+              let cur = "";
+              for (const w of words) {
+                const test = cur ? cur + " " + w : w;
+                if (test.length <= maxChars) {
+                  cur = test;
+                } else {
+                  if (cur) allLines.push(cur);
+                  cur = w;
+                }
+              }
+              if (cur) allLines.push(cur);
+            });
+
+            const visibleLines = allLines.slice(0, maxLines);
+            visibleLines.forEach((line, lineIdx) => {
+              svgContent += `<text x="${textX}" y="${textY + fontSizePx * (lineIdx + 1)}" font-size="${fontSizePx}" fill="#333">${escapeXml(line)}</text>`;
+            });
+          }
+        });
+      });
+    });
+
+    svgContent += `</svg>`;
+    return svgContent;
+  };
+
+  const escapeXml = (s: string): string => {
+    return s
+      .replace(/&/g, "&amp;")
+      .replace(/</g, "&lt;")
+      .replace(/>/g, "&gt;")
+      .replace(/"/g, "&quot;")
+      .replace(/'/g, "&apos;");
+  };
+
+  const toggleSection = (key: string) => {
+    setExpandedSections((prev) => ({ ...prev, [key]: !prev[key] }));
+  };
+
+  const renderSectionHeader = (key: string, title: string, action?: React.ReactNode) => {
+    const isOpen = !!expandedSections[key];
+    return (
+      <button
+        type="button"
+        onClick={() => toggleSection(key)}
+        className="w-full flex items-center justify-between text-left cursor-pointer"
+      >
+        <h3 className="font-semibold text-sm">{title}</h3>
+        <div className="flex items-center gap-2">
+          {action}
+          <svg
+            className={`w-4 h-4 text-[var(--foreground)]/60 transition-transform duration-200 ${
+              isOpen ? "rotate-180" : ""
+            }`}
+            fill="none"
+            viewBox="0 0 24 24"
+            stroke="currentColor"
+            strokeWidth={2}
+          >
+            <path strokeLinecap="round" strokeLinejoin="round" d="M19 9l-7 7-7-7" />
+          </svg>
+        </div>
+      </button>
+    );
+  };
+
+  const downloadBlob = (blob: Blob, filename: string) => {
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = filename;
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    URL.revokeObjectURL(url);
+  };
+
+  const handleExportPDF = async () => {
+    setExporting(true);
+    try {
+      const svgContent = exportToSVG();
+      if (!svgContent) {
+        setMessage("No simulation data to export");
+        return;
+      }
+
+      const isSideBySide = simViewMode === "side-by-side";
+      const sideGapMm = 6;
+      const labelGapMm = 10;
+      const marginMm = 6;
+
+      const labelCount = simulation!.labels.length;
+      const pageWmm = isSideBySide
+        ? labelCount * (widthMm * 2 + sideGapMm) + (labelCount - 1) * labelGapMm + marginMm * 2
+        : widthMm + marginMm * 2;
+      const pageHmm = isSideBySide
+        ? heightMm + marginMm * 2
+        : labelCount * (heightMm * 2 + sideGapMm) + (labelCount - 1) * labelGapMm + marginMm * 2;
+
+      const doc = new jsPDF({
+        orientation: pageWmm > pageHmm ? "landscape" : "portrait",
+        unit: "mm",
+        format: [pageWmm, pageHmm],
+      });
+
+      const svgBlob = new Blob([svgContent], { type: "image/svg+xml;charset=utf-8" });
+      const url = URL.createObjectURL(svgBlob);
+
+      try {
+        const img = await new Promise<HTMLImageElement>((resolve, reject) => {
+          const image = new Image();
+          image.onload = () => resolve(image);
+          image.onerror = reject;
+          image.src = url;
+        });
+
+        const canvas = document.createElement("canvas");
+        const dpi = 300;
+        const scale = dpi / 25.4;
+        canvas.width = Math.max(1, Math.round(pageWmm * scale));
+        canvas.height = Math.max(1, Math.round(pageHmm * scale));
+        const ctx = canvas.getContext("2d");
+        if (!ctx) throw new Error("Failed to create canvas context");
+        ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+        const pngDataUrl = canvas.toDataURL("image/png");
+
+        doc.addImage(pngDataUrl, "PNG", 0, 0, pageWmm, pageHmm);
+        const pdfBlob = doc.output("blob");
+        downloadBlob(pdfBlob, `${config.name || "simulation"}.pdf`);
+        setMessage("PDF exported successfully");
+      } finally {
+        URL.revokeObjectURL(url);
+      }
+    } catch (err) {
+      console.error(err);
+      setMessage("Failed to export PDF");
+    } finally {
+      setExporting(false);
+      setShowExportMenu(false);
+    }
+  };
+
+  const handleExportAI = async () => {
+    setExporting(true);
+    try {
+      if (!simulation) {
+        setMessage("No simulation data to export");
+        return;
+      }
+
+      // Create a PDF with editable text using jsPDF
+      // Illustrator opens PDF natively and preserves text editability
+      const isSideBySide = simViewMode === "side-by-side";
+      const sideGapMm = 6;
+      const labelGapMm = 10;
+      const marginMm = 6;
+      const headerHeightMm = 8;
+      const labelCount = simulation.labels.length;
+
+      // Calculate dimensions
+      const labelInnerWidthMm = widthMm * 2 + sideGapMm;
+      const labelInnerHeightMm = heightMm + headerHeightMm;
+
+      const pageWmm = isSideBySide
+        ? labelCount * labelInnerWidthMm + (labelCount - 1) * labelGapMm + marginMm * 2
+        : labelInnerWidthMm + marginMm * 2;
+      const pageHmm = isSideBySide
+        ? labelInnerHeightMm + marginMm * 2
+        : labelCount * labelInnerHeightMm + (labelCount - 1) * labelGapMm + marginMm * 2;
+
+      const doc = new jsPDF({
+        orientation: pageWmm > pageHmm ? "landscape" : "portrait",
+        unit: "mm",
+        format: [pageWmm, pageHmm],
+        putOnlyUsedFonts: true,
+        floatPrecision: 16,
+      });
+
+      // Add font - try to use Microsoft YaHei (微软雅黑) for Chinese support
+      // Note: jsPDF supports standard PDF fonts. For full Chinese support,
+      // the font needs to be embedded. We'll use Helvetica as fallback.
+      doc.setFont("helvetica");
+
+      // Render each label
+      simulation.labels.forEach((label, idx) => {
+        const labelX = isSideBySide
+          ? marginMm + idx * (labelInnerWidthMm + labelGapMm)
+          : marginMm;
+        const labelY = isSideBySide
+          ? marginMm
+          : marginMm + idx * (labelInnerHeightMm + labelGapMm);
+
+        // Label header
+        doc.setFontSize(14);
+        doc.setTextColor(30, 58, 95);
+        doc.setFont("helvetica", "bold");
+        doc.text(`Label ${idx + 1}`, labelX + 2, labelY + 6);
+
+        const sideY = labelY + headerHeightMm;
+
+        // Front and back sides
+        (["front", "back"] as const).forEach((side, sideIdx) => {
+          const sideX = labelX + (sideIdx === 0 ? 0 : widthMm + sideGapMm);
+          const sidePadding = getPadding(side);
+
+          // Side label
+          doc.setFontSize(11);
+          doc.setTextColor(102, 102, 102);
+          doc.setFont("helvetica", "normal");
+          doc.text(side, sideX + 2, labelY + headerHeightMm - 1);
+
+          // Side background (white rectangle with border)
+          doc.setDrawColor(229, 231, 235);
+          doc.setLineWidth(0.2);
+          doc.rect(sideX, sideY, widthMm, heightMm, "S");
+
+          // Regions
+          label[side].forEach((r) => {
+            const regionColor = r.type === "fixed" ? [37, 99, 235] : [5, 150, 98];
+            const strokeColor = r.type === "fixed" ? [37, 99, 235] : [5, 150, 98];
+            const rx = sideX + r.x;
+            const ry = sideY + r.y;
+            const rw = r.widthMm;
+            const rh = r.heightMm;
+
+            // Region rectangle fill (light)
+            doc.setFillColor(regionColor[0], regionColor[1], regionColor[2]);
+            doc.setDrawColor(strokeColor[0], strokeColor[1], strokeColor[2]);
+            doc.setLineWidth(0.3);
+            doc.rect(rx, ry, rw, rh, "FD");
+
+            // Region ID
+            doc.setFontSize(8);
+            doc.setTextColor(strokeColor[0], strokeColor[1], strokeColor[2]);
+            doc.text(r.regionId, rx + rw - 2, ry + 3, { align: "right" });
+
+            // Text content - editable text
+            if (r.text) {
+              const textX = rx + sidePadding.left;
+              const textY = ry + sidePadding.top;
+              const textWidth = rw - sidePadding.left - sidePadding.right;
+              const textHeight = rh - sidePadding.top - sidePadding.bottom;
+              const fontSizePt = Math.max(6, config.fontSizeMm * 2.83); // mm to points
+              const lineHeightPt = fontSizePt * 1.25;
+              const charWidthMm = config.fontSizeMm * 0.5;
+              const maxChars = Math.max(1, Math.floor(textWidth / charWidthMm));
+              const maxLines = Math.max(1, Math.floor(textHeight / (lineHeightPt / 2.83)));
+
+              // Wrap text into lines
+              const allLines: string[] = [];
+              r.text.split("\n").forEach((paragraph) => {
+                const words = paragraph.split(/\s+/);
+                let cur = "";
+                for (const w of words) {
+                  const test = cur ? cur + " " + w : w;
+                  if (test.length <= maxChars) {
+                    cur = test;
+                  } else {
+                    if (cur) allLines.push(cur);
+                    cur = w;
+                  }
+                }
+                if (cur) allLines.push(cur);
+              });
+
+              // Output visible lines as editable text
+              doc.setFontSize(fontSizePt);
+              doc.setTextColor(51, 51, 51);
+              doc.setFont("helvetica", "normal");
+
+              const visibleLines = allLines.slice(0, maxLines);
+              visibleLines.forEach((line, lineIdx) => {
+                const lineYPos = textY + (lineIdx + 1) * (lineHeightPt / 2.83);
+                if (lineYPos < ry + rh - sidePadding.bottom) {
+                  // Check if this line contains connection text
+                  const hasConnection = config.connectionText && line.includes(config.connectionText);
+                  if (hasConnection) {
+                    doc.setTextColor(5, 150, 98); // Green for split text
+                  } else {
+                    doc.setTextColor(51, 51, 51);
+                  }
+                  doc.text(line, textX, lineYPos);
+                }
+              });
+
+              // Overflow indicator
+              if (allLines.length > maxLines || r.overflowed) {
+                doc.setTextColor(239, 68, 68);
+                doc.setFontSize(8);
+                doc.text("+", textX + textWidth - 1, textY + (maxLines + 0.5) * (lineHeightPt / 2.83), { align: "right" });
+              }
+            }
+          });
+        });
+      });
+
+      // Save as .ai file (PDF with .ai extension - Illustrator opens this natively)
+      const pdfBlob = doc.output("blob");
+      downloadBlob(pdfBlob, `${config.name || "simulation"}.ai`);
+      setMessage("AI file exported successfully (editable text)");
+    } catch (err) {
+      console.error(err);
+      setMessage("Failed to export AI file: " + (err as Error).message);
+    } finally {
+      setExporting(false);
+      setShowExportMenu(false);
+    }
   };
 
   const handleSave = async () => {
@@ -763,6 +1210,14 @@ export default function SplitWorkspace() {
     const renderSvg = (side: "front" | "back", showLines = false) => {
       const sidePadding = getPadding(side);
       const sideImage = parseSideImage(config.imageData, side);
+      const handleWheelZoom = (e: React.WheelEvent) => {
+        // Zoom with Ctrl/Cmd + wheel, or just wheel over canvas
+        if (e.ctrlKey || e.metaKey || true) {
+          e.preventDefault();
+          const delta = e.deltaY > 0 ? -0.5 : 0.5;
+          setScale((s) => Math.max(2, Math.min(10, s + delta)));
+        }
+      };
       return (
         <svg
           key={side}
@@ -770,10 +1225,12 @@ export default function SplitWorkspace() {
           width={mmToPx(widthMm)}
           height={mmToPx(heightMm)}
           className={`bg-white border shadow-[var(--shadow-sm)] cursor-crosshair transition-colors ${activeSide === side ? "border-[var(--primary)]" : "border-[var(--border)]"}`}
+          style={{ overflow: "visible" }}
           onMouseDown={(e) => handleSvgMouseDown(e, side)}
           onMouseMove={handleSvgMouseMove}
           onMouseUp={handleSvgMouseUp}
           onMouseLeave={handleSvgMouseUp}
+          onWheel={handleWheelZoom}
         >
             {sideImage && showImage && (
               <image
@@ -810,16 +1267,59 @@ export default function SplitWorkspace() {
                   const sy = r.y + r.heightMm;
                   const tx = target.x + target.widthMm / 2;
                   const ty = target.y;
+                  const pathD = getBezierConnectionPath(sx, sy, tx, ty);
+                  const pathLength = getPathTotalLength(sx, sy, tx, ty);
+                  // When a region is selected, only show the OUTGOING connection from
+                  // that selected region (r.id === selectedRegionId). Hide all other
+                  // connections so the next-flow path stays focused.
+                  const hasSelection = !!selectedRegionId;
+                  const isOutgoingFromSelected = r.id === selectedRegionId;
+                  const lineStroke = isOutgoingFromSelected ? "#F59E0B" : "#6366f1";
+                  const lineOpacity = hasSelection
+                    ? isOutgoingFromSelected
+                      ? 1
+                      : 0.15
+                    : 0.85;
+                  const lineWidth = isOutgoingFromSelected ? 3 : 2;
+                  const circleFill = isOutgoingFromSelected ? "#F59E0B" : "#6366f1";
+                  const circleOpacity = hasSelection
+                    ? isOutgoingFromSelected
+                      ? 1
+                      : 0.15
+                    : 0.85;
+                  const circleRadius = isOutgoingFromSelected ? 6 : 4;
                   return (
-                    <path
-                      key={`conn-${r.id}-${target.id}`}
-                      d={getBezierConnectionPath(sx, sy, tx, ty)}
-                      fill="none"
-                      stroke="#6366f1"
-                      strokeWidth={2.5}
-                      opacity={0.8}
-                      pointerEvents="none"
-                    />
+                    <g key={`conn-${r.id}-${target.id}`}>
+                      {/* Animated dotted line with motion from initiator to target */}
+                      <path
+                        d={pathD}
+                        fill="none"
+                        stroke={lineStroke}
+                        strokeWidth={lineWidth}
+                        strokeDasharray="4,4"
+                        opacity={lineOpacity}
+                        pointerEvents="none"
+                        style={{
+                          animation: `dashFlow 1s linear infinite`,
+                        }}
+                      />
+                      {/* Arrow marker at target */}
+                      <circle
+                        cx={mmToPx(tx)}
+                        cy={mmToPx(ty)}
+                        r={circleRadius}
+                        fill={circleFill}
+                        opacity={circleOpacity}
+                      />
+                      {/* Invisible wider hit area for hover */}
+                      <path
+                        d={pathD}
+                        fill="none"
+                        stroke="transparent"
+                        strokeWidth={10}
+                        pointerEvents="stroke"
+                      />
+                    </g>
                   );
                 })}
 
@@ -966,7 +1466,12 @@ export default function SplitWorkspace() {
       };
 
       return (
-        <svg className="absolute top-0 left-0 pointer-events-none" width={overlayW} height={overlayH}>
+        <svg className="absolute top-0 left-0 pointer-events-none overflow-visible" width={overlayW} height={overlayH}>
+          <defs>
+            <marker id="arrowhead" markerWidth="10" markerHeight="7" refX="9" refY="3.5" orient="auto">
+              <polygon points="0 0, 10 3.5, 0 7" fill="#6366f1" opacity="0.8" />
+            </marker>
+          </defs>
           {config.regions
             .filter((r) => r.overflowTargetId)
             .map((r) => {
@@ -978,15 +1483,43 @@ export default function SplitWorkspace() {
               const sy = sOrigin.y + mmToPx(r.y + r.heightMm);
               const tx = tOrigin.x + mmToPx(target.x + target.widthMm / 2);
               const ty = tOrigin.y + mmToPx(target.y);
+              const hasSelection = !!selectedRegionId;
+              const isOutgoingFromSelected = r.id === selectedRegionId;
+              const lineStroke = isOutgoingFromSelected ? "#F59E0B" : "#6366f1";
+              const lineOpacity = hasSelection
+                ? isOutgoingFromSelected
+                  ? 1
+                  : 0.15
+                : 0.85;
+              const lineWidth = isOutgoingFromSelected ? 3 : 2;
+              const circleFill = isOutgoingFromSelected ? "#F59E0B" : "#6366f1";
+              const circleOpacity = hasSelection
+                ? isOutgoingFromSelected
+                  ? 1
+                  : 0.15
+                : 0.85;
+              const circleRadius = isOutgoingFromSelected ? 6 : 4;
               return (
-                <path
-                  key={`overlay-conn-${r.id}-${target.id}`}
-                  d={getOverlayBezierPath(sx, sy, tx, ty)}
-                  fill="none"
-                  stroke="#6366f1"
-                  strokeWidth={2.5}
-                  opacity={0.8}
-                />
+                <g key={`overlay-conn-${r.id}-${target.id}`}>
+                  <path
+                    d={getOverlayBezierPath(sx, sy, tx, ty)}
+                    fill="none"
+                    stroke={lineStroke}
+                    strokeWidth={lineWidth}
+                    strokeDasharray="4,4"
+                    opacity={lineOpacity}
+                    style={{
+                      animation: `dashFlow 1s linear infinite`,
+                    }}
+                  />
+                  <circle
+                    cx={tx}
+                    cy={ty}
+                    r={circleRadius}
+                    fill={circleFill}
+                    opacity={circleOpacity}
+                  />
+                </g>
               );
             })}
         </svg>
@@ -1115,275 +1648,448 @@ export default function SplitWorkspace() {
               ) : (
                 renderCanvasCard("front")
               )}
-
-              <div className="text-xs text-[var(--foreground)]/50">
-                Click a label to activate it (highlighted border). Paste/upload an image onto the active label. Drag inside the green dotted region to draw regions on the active side. Click a region to select it and show resize handles; drag a selected region to pan it. Max {MAX_REGIONS} regions (R1-R10).
-              </div>
             </>
           )}
         </div>
 
         <div className="space-y-4 lg:sticky lg:top-6 lg:self-start lg:max-h-[calc(100vh-3rem)] lg:overflow-y-auto">
+          {/* Overflow Options - Moved to top */}
+          <div className="bg-white border border-[var(--border)] rounded-xl p-4 space-y-3">
+            {renderSectionHeader("overflow-options", "Overflow Options")}
+            {expandedSections["overflow-options"] && (
+              <>
+                <div>
+                  <label className="text-xs text-[var(--foreground)]/60">Font</label>
+                  <select
+                    value={config.fontId || ""}
+                    onChange={(e) => setConfig((c) => ({ ...c, fontId: e.target.value || undefined }))}
+                    className="w-full px-2 py-1.5 border border-[var(--border)] rounded-lg text-sm"
+                  >
+                    <option value="">Default</option>
+                    {fonts.map((f) => (
+                      <option key={f.id} value={f.id}>
+                        {f.font_name}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+                <label className="flex items-center gap-2 text-sm">
+                  <input
+                    type="checkbox"
+                    checked={config.allowSplitText}
+                    onChange={(e) => setConfig((c) => ({ ...c, allowSplitText: e.target.checked }))}
+                  />
+                  Allow split text
+                </label>
+                <div>
+                  <label className="text-xs text-[var(--foreground)]/60">Connection text</label>
+                  <input
+                    type="text"
+                    value={config.connectionText || ""}
+                    onChange={(e) => setConfig((c) => ({ ...c, connectionText: e.target.value }))}
+                    className="w-full px-2 py-1.5 border border-[var(--border)] rounded-lg text-sm"
+                  />
+                </div>
+                <div>
+                  <label className="text-xs text-[var(--foreground)]/60">Font size (mm)</label>
+                  <input
+                    type="number"
+                    min={1}
+                    max={20}
+                    step={0.5}
+                    value={config.fontSizeMm}
+                    onChange={(e) => setConfig((c) => ({ ...c, fontSizeMm: Number(e.target.value) }))}
+                    className="w-full px-2 py-1.5 border border-[var(--border)] rounded-lg text-sm"
+                  />
+                </div>
+              </>
+            )}
+          </div>
+
           {selectedRegion && (
             <div className="bg-white border border-[var(--border)] rounded-xl p-4 space-y-3">
-              <div className="flex items-center justify-between">
-                <h3 className="font-semibold text-sm">{selectedRegion.regionId} Settings</h3>
+              {renderSectionHeader(
+                `region-settings-${selectedRegion.id}`,
+                `${selectedRegion.regionId} Settings`,
                 <button
-                  onClick={() => deleteRegion(selectedRegion.id)}
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    deleteRegion(selectedRegion.id);
+                  }}
                   className="text-[var(--destructive)] text-xs cursor-pointer"
                 >
                   Delete
                 </button>
-              </div>
-              <div>
-                <label className="text-xs text-[var(--foreground)]/60">Side</label>
-                <select
-                  value={selectedRegion.side}
-                  onChange={(e) => updateRegion(selectedRegion.id, { side: e.target.value as "front" | "back" })}
-                  className="w-full px-2 py-1.5 border border-[var(--border)] rounded-lg text-sm"
-                >
-                  <option value="front">Front</option>
-                  <option value="back">Back</option>
-                </select>
-              </div>
-              <div>
-                <label className="text-xs text-[var(--foreground)]/60">Type</label>
-                <select
-                  value={selectedRegion.type}
-                  onChange={(e) => updateRegion(selectedRegion.id, { type: e.target.value as SplitRegion["type"] })}
-                  className="w-full px-2 py-1.5 border border-[var(--border)] rounded-lg text-sm"
-                >
-                  <option value="overflow">Overflow</option>
-                  <option value="fixed">Fixed</option>
-                </select>
-              </div>
-              {selectedRegion.type === "overflow" && (
-                <div>
-                  <label className="text-xs text-[var(--foreground)]/60">Overflow target</label>
-                  <select
-                    value={selectedRegion.overflowTargetId || ""}
-                    onChange={(e) => updateRegion(selectedRegion.id, { overflowTargetId: e.target.value || undefined })}
-                    className="w-full px-2 py-1.5 border border-[var(--border)] rounded-lg text-sm"
-                  >
-                    <option value="">None (create new label)</option>
-                    {config.regions
-                      .filter((r) => r.id !== selectedRegion.id && (isValidOverflowTarget(selectedRegion, r) || r.regionId === selectedRegion.overflowTargetId))
-                      .map((r) => (
-                        <option key={r.id} value={r.regionId}>
-                          {r.regionId} ({r.side})
+              )}
+              {expandedSections[`region-settings-${selectedRegion.id}`] && (
+                <>
+                  <div>
+                    <label className="text-xs text-[var(--foreground)]/60">Side</label>
+                    <select
+                      value={selectedRegion.side}
+                      onChange={(e) => updateRegion(selectedRegion.id, { side: e.target.value as "front" | "back" })}
+                      className="w-full px-2 py-1.5 border border-[var(--border)] rounded-lg text-sm"
+                    >
+                      <option value="front">Front</option>
+                      <option value="back">Back</option>
+                    </select>
+                  </div>
+                  <div>
+                    <label className="text-xs text-[var(--foreground)]/60">Type</label>
+                    <select
+                      value={selectedRegion.type}
+                      onChange={(e) => updateRegion(selectedRegion.id, { type: e.target.value as SplitRegion["type"] })}
+                      className="w-full px-2 py-1.5 border border-[var(--border)] rounded-lg text-sm"
+                    >
+                      <option value="overflow">Overflow</option>
+                      <option value="fixed">Fixed</option>
+                    </select>
+                  </div>
+                  {selectedRegion.type === "overflow" && (
+                    <div>
+                      <label className="text-xs text-[var(--foreground)]/60">Overflow target</label>
+                      <select
+                        value={selectedRegion.overflowTargetId || ""}
+                        onChange={(e) => updateRegion(selectedRegion.id, { overflowTargetId: e.target.value || undefined })}
+                        className="w-full px-2 py-1.5 border border-[var(--border)] rounded-lg text-sm"
+                      >
+                        <option value="">None (create new label)</option>
+                        {config.regions
+                          .filter((r) => r.id !== selectedRegion.id && (isValidOverflowTarget(selectedRegion, r) || r.regionId === selectedRegion.overflowTargetId))
+                          .map((r) => (
+                            <option key={r.id} value={r.regionId}>
+                              {r.regionId} ({r.side})
+                            </option>
+                          ))}
+                      </select>
+                    </div>
+                  )}
+                  <div>
+                    <label className="text-xs text-[var(--foreground)]/60">Content source for {selectedRegion.regionId}</label>
+                    <p className="text-xs text-[var(--foreground)]/40 mb-1">Pick one shared source for this region.</p>
+                    <select
+                      value={selectedRegion.contentSourceId || ""}
+                      onChange={(e) => updateRegion(selectedRegion.id, { contentSourceId: e.target.value || undefined })}
+                      className="w-full px-2 py-1.5 border border-[var(--border)] rounded-lg text-sm"
+                    >
+                      <option value="">None</option>
+                      {config.contentSources.map((s) => (
+                        <option key={s.id} value={s.id}>
+                          {s.label}
                         </option>
                       ))}
-                  </select>
-                </div>
+                    </select>
+                  </div>
+                  <div className="grid grid-cols-2 gap-2 text-xs">
+                    <div>X: {selectedRegion.x.toFixed(1)}mm</div>
+                    <div>Y: {selectedRegion.y.toFixed(1)}mm</div>
+                    <div>W: {selectedRegion.widthMm.toFixed(1)}mm</div>
+                    <div>H: {selectedRegion.heightMm.toFixed(1)}mm</div>
+                  </div>
+                </>
               )}
-              <div>
-                <label className="text-xs text-[var(--foreground)]/60">Content source for {selectedRegion.regionId}</label>
-                <p className="text-xs text-[var(--foreground)]/40 mb-1">Pick one shared source for this region.</p>
-                <select
-                  value={selectedRegion.contentSourceId || ""}
-                  onChange={(e) => updateRegion(selectedRegion.id, { contentSourceId: e.target.value || undefined })}
-                  className="w-full px-2 py-1.5 border border-[var(--border)] rounded-lg text-sm"
-                >
-                  <option value="">None</option>
-                  {config.contentSources.map((s) => (
-                    <option key={s.id} value={s.id}>
-                      {s.label}
-                    </option>
-                  ))}
-                </select>
-              </div>
-              <div className="grid grid-cols-2 gap-2 text-xs">
-                <div>X: {selectedRegion.x.toFixed(1)}mm</div>
-                <div>Y: {selectedRegion.y.toFixed(1)}mm</div>
-                <div>W: {selectedRegion.widthMm.toFixed(1)}mm</div>
-                <div>H: {selectedRegion.heightMm.toFixed(1)}mm</div>
-              </div>
             </div>
           )}
 
           <div className="bg-white border border-[var(--border)] rounded-xl p-4 space-y-3">
-            <div>
-              <h3 className="font-semibold text-sm">Shared Content Sources</h3>
-              <p className="text-xs text-[var(--foreground)]/50 mt-0.5">
-                Create reusable text blocks here. Each region can be assigned one source.
-              </p>
-            </div>
-            {config.contentSources.map((s) => (
-              <div key={s.id} className="border border-[var(--border)] rounded-lg p-2 space-y-2">
-                <div className="flex items-center justify-between">
-                  <input
-                    type="text"
-                    value={s.label}
-                    onChange={(e) => updateContentSource(s.id, { label: e.target.value })}
-                    className="text-sm font-medium border-none p-0 focus:ring-0"
-                  />
-                  <button onClick={() => deleteContentSource(s.id)} className="text-[var(--destructive)] text-xs cursor-pointer">
-                    Remove
+            {renderSectionHeader(
+              "shared-content-sources",
+              "Shared Content Sources"
+            )}
+            {expandedSections["shared-content-sources"] && (
+              <>
+                <p className="text-xs text-[var(--foreground)]/50">
+                  Create reusable text blocks here. Each region can be assigned one source.
+                </p>
+                <div className="flex gap-2">
+                  <button
+                    onClick={() => addContentSource("manual", selectedRegionId ?? undefined)}
+                    className="px-3 py-1.5 border border-[var(--border)] rounded-lg text-xs cursor-pointer"
+                  >
+                    + Manual text{selectedRegionId && " for selected region"}
+                  </button>
+                  <button
+                    onClick={() => addContentSource("translation", selectedRegionId ?? undefined)}
+                    className="px-3 py-1.5 border border-[var(--border)] rounded-lg text-xs cursor-pointer"
+                  >
+                    + Translation{selectedRegionId && " for selected region"}
                   </button>
                 </div>
-                {s.type === "manual" ? (
-                  <textarea
-                    value={s.manualText || ""}
-                    onChange={(e) => updateContentSource(s.id, { manualText: e.target.value })}
-                    rows={2}
-                    className="w-full px-2 py-1.5 border border-[var(--border)] rounded-lg text-xs"
-                  />
-                ) : (
-                  <select
-                    value={s.translationId || ""}
-                    onChange={(e) => updateContentSource(s.id, { translationId: Number(e.target.value) })}
-                    className="w-full px-2 py-1.5 border border-[var(--border)] rounded-lg text-xs"
-                  >
-                    <option value="">Select translation table</option>
-                    {translations.map((t) => (
-                      <option key={t.id} value={t.id}>
-                        {t.table_name}
-                      </option>
-                    ))}
-                  </select>
+                {config.contentSources.map((s) => (
+                  <div key={s.id} className="border border-[var(--border)] rounded-lg p-2 space-y-2">
+                    <div className="flex items-center justify-between">
+                      <input
+                        type="text"
+                        value={s.label}
+                        title={s.type === "manual" ? s.manualText : s.label}
+                        onChange={(e) => updateContentSource(s.id, { label: e.target.value })}
+                        className="text-sm font-medium border-none p-0 focus:ring-0"
+                      />
+                      <button onClick={() => deleteContentSource(s.id)} className="text-[var(--destructive)] text-xs cursor-pointer">
+                        Remove
+                      </button>
+                    </div>
+                    {s.type === "manual" ? (
+                      <textarea
+                        value={s.manualText || ""}
+                        onChange={(e) => updateContentSource(s.id, { manualText: e.target.value })}
+                        rows={10}
+                        className="w-full px-2 py-1.5 border border-[var(--border)] rounded-lg text-xs"
+                      />
+                    ) : (
+                      <select
+                        value={s.translationId || ""}
+                        onChange={(e) => updateContentSource(s.id, { translationId: Number(e.target.value) })}
+                        className="w-full px-2 py-1.5 border border-[var(--border)] rounded-lg text-xs"
+                      >
+                        <option value="">Select translation table</option>
+                        {translations.map((t) => (
+                          <option key={t.id} value={t.id}>
+                            {t.table_name}
+                          </option>
+                        ))}
+                      </select>
+                    )}
+                  </div>
+                ))}
+                {!selectedRegionId && config.contentSources.length === 0 && (
+                  <p className="text-xs text-[var(--foreground)]/40">Select a region first to auto-assign a new source to it.</p>
                 )}
-              </div>
-            ))}
-            <div className="flex gap-2">
-              <button
-                onClick={() => addContentSource("manual", selectedRegionId ?? undefined)}
-                className="px-3 py-1.5 border border-[var(--border)] rounded-lg text-xs cursor-pointer"
-              >
-                + Manual text{selectedRegionId && " for selected region"}
-              </button>
-              <button
-                onClick={() => addContentSource("translation", selectedRegionId ?? undefined)}
-                className="px-3 py-1.5 border border-[var(--border)] rounded-lg text-xs cursor-pointer"
-              >
-                + Translation{selectedRegionId && " for selected region"}
-              </button>
-            </div>
-            {!selectedRegionId && config.contentSources.length === 0 && (
-              <p className="text-xs text-[var(--foreground)]/40">Select a region first to auto-assign a new source to it.</p>
+              </>
             )}
           </div>
-
-          <div className="bg-white border border-[var(--border)] rounded-xl p-4 space-y-3">
-            <h3 className="font-semibold text-sm">Overflow Options</h3>
-            <div>
-              <label className="text-xs text-[var(--foreground)]/60">Font</label>
-              <select
-                value={config.fontId || ""}
-                onChange={(e) => setConfig((c) => ({ ...c, fontId: e.target.value || undefined }))}
-                className="w-full px-2 py-1.5 border border-[var(--border)] rounded-lg text-sm"
-              >
-                <option value="">Default</option>
-                {fonts.map((f) => (
-                  <option key={f.id} value={f.id}>
-                    {f.font_name}
-                  </option>
-                ))}
-              </select>
-            </div>
-            <label className="flex items-center gap-2 text-sm">
-              <input
-                type="checkbox"
-                checked={config.allowSplitText}
-                onChange={(e) => setConfig((c) => ({ ...c, allowSplitText: e.target.checked }))}
-              />
-              Allow split text
-            </label>
-            <div>
-              <label className="text-xs text-[var(--foreground)]/60">Connection text</label>
-              <input
-                type="text"
-                value={config.connectionText || ""}
-                onChange={(e) => setConfig((c) => ({ ...c, connectionText: e.target.value }))}
-                className="w-full px-2 py-1.5 border border-[var(--border)] rounded-lg text-sm"
-              />
-            </div>
-            <div>
-              <label className="text-xs text-[var(--foreground)]/60">Font size (mm)</label>
-              <input
-                type="number"
-                min={1}
-                max={20}
-                step={0.5}
-                value={config.fontSizeMm}
-                onChange={(e) => setConfig((c) => ({ ...c, fontSizeMm: Number(e.target.value) }))}
-                className="w-full px-2 py-1.5 border border-[var(--border)] rounded-lg text-sm"
-              />
-            </div>
-          </div>
-
-          <button
-            onClick={handleRunSimulation}
-            disabled={config.regions.length === 0}
-            className="w-full px-4 py-2 bg-[var(--accent)] text-white rounded-lg text-sm font-semibold disabled:opacity-40 cursor-pointer"
-          >
-            Run Simulation
-          </button>
         </div>
       </div>
 
-      {simulation && (
-        <div className="bg-white border border-[var(--border)] rounded-xl p-4 space-y-4">
-          <div className="flex items-center justify-between">
-            <h3 className="font-semibold text-sm">Simulation Result</h3>
-            <select
-              value={viewLabelIndex}
-              onChange={(e) => setViewLabelIndex(Number(e.target.value))}
-              className="px-2 py-1 border border-[var(--border)] rounded-lg text-sm"
-            >
-              {simulation.labels.map((_, idx) => (
-                <option key={idx} value={idx}>
-                  Label {idx + 1}
-                </option>
-              ))}
-            </select>
-          </div>
-
-          <div className={`flex ${selectedLayout?.details?.viewMode === "top-bottom" ? "flex-col" : "flex-row"} gap-4`}>
-            {(["front", "back"] as const).map((side) => {
-              const sidePadding = getPadding(side);
-              return (
-                <div key={side} className="space-y-1">
-                  <div className="text-xs font-medium text-[var(--foreground)]/70 capitalize">{side}</div>
-                  <svg width={mmToPx(widthMm)} height={mmToPx(heightMm)} className="bg-white border border-[var(--border)]">
-                    {simulation.labels[viewLabelIndex]?.[side].map((r) => (
-                      <g key={r.regionId}>
-                        <rect
-                          x={mmToPx(r.x)}
-                          y={mmToPx(r.y)}
-                          width={mmToPx(r.widthMm)}
-                          height={mmToPx(r.heightMm)}
-                          fill={r.type === "fixed" ? "rgba(37,99,235,0.08)" : "rgba(5,150,105,0.08)"}
-                          stroke={r.type === "fixed" ? "#2563EB" : "#059669"}
-                        />
-                        <foreignObject x={mmToPx(r.x + sidePadding.left)} y={mmToPx(r.y + sidePadding.top)} width={mmToPx(r.widthMm - sidePadding.left - sidePadding.right)} height={mmToPx(r.heightMm - sidePadding.top - sidePadding.bottom)}>
-                          <div
-                            className="leading-tight overflow-hidden"
-                            style={{
-                              fontFamily: config.fontId ? "SplitFont, sans-serif" : "sans-serif",
-                              fontSize: Math.max(8, mmToPx(config.fontSizeMm) * 0.8),
-                            }}
-                          >
-                            {r.text.split("\n").map((line, i) => (
-                              <div key={i}>{line}</div>
-                            ))}
-                          </div>
-                        </foreignObject>
-                        <text x={mmToPx(r.x + r.widthMm - 2)} y={mmToPx(r.y + 8)} textAnchor="end" fontSize={10} fill={r.type === "fixed" ? "#2563EB" : "#059669"}>
-                          {r.regionId}
-                        </text>
-                      </g>
-                    ))}
-                  </svg>
+      {/* Simulation Result Modal */}
+      {showSimulationModal && simulation && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">
+          <div className="bg-white rounded-xl shadow-[var(--shadow-xl)] w-full max-w-5xl max-h-[90vh] overflow-hidden flex flex-col">
+            {/* Modal Header */}
+            <div className="flex items-center justify-between px-6 py-4 border-b border-[var(--border)]">
+              <div className="flex items-center gap-4">
+                <h3 className="text-lg font-semibold text-[var(--foreground)]">Simulation Result</h3>
+                <div className="flex items-center gap-2 bg-[var(--muted)] rounded-lg p-1">
+                  <button
+                    onClick={() => setSimViewMode("side-by-side")}
+                    className={`px-3 py-1.5 rounded-md text-xs font-medium transition-all cursor-pointer ${
+                      simViewMode === "side-by-side"
+                        ? "bg-white text-[var(--primary)] shadow-sm"
+                        : "text-[var(--foreground)]/60 hover:text-[var(--foreground)]"
+                    }`}
+                  >
+                    Side by Side
+                  </button>
+                  <button
+                    onClick={() => setSimViewMode("top-bottom")}
+                    className={`px-3 py-1.5 rounded-md text-xs font-medium transition-all cursor-pointer ${
+                      simViewMode === "top-bottom"
+                        ? "bg-white text-[var(--primary)] shadow-sm"
+                        : "text-[var(--foreground)]/60 hover:text-[var(--foreground)]"
+                    }`}
+                  >
+                    Top & Bottom
+                  </button>
                 </div>
-              );
-            })}
-          </div>
-
-          {simulation.unplacedText && (
-            <div className="p-3 bg-red-50 border border-red-200 rounded-lg text-sm text-[var(--destructive)]">
-              Unplaced text: {simulation.unplacedText}
+              </div>
+              <div className="flex items-center gap-2">
+                <button
+                  onClick={() => setSimScale((s) => Math.max(0.25, s - 0.25))}
+                  className="px-3 py-1.5 border border-[var(--border)] rounded-lg text-xs hover:bg-[var(--muted)] cursor-pointer"
+                >
+                  −
+                </button>
+                <span className="text-xs w-14 text-center font-medium">{Math.round(simScale * 100)}%</span>
+                <button
+                  onClick={() => setSimScale((s) => Math.min(3, s + 0.25))}
+                  className="px-3 py-1.5 border border-[var(--border)] rounded-lg text-xs hover:bg-[var(--muted)] cursor-pointer"
+                >
+                  +
+                </button>
+                <button
+                  onClick={() => { setSimScale(1); setSimPan({ x: 0, y: 0 }); }}
+                  className="px-3 py-1.5 border border-[var(--border)] rounded-lg text-xs hover:bg-[var(--muted)] cursor-pointer"
+                >
+                  Reset
+                </button>
+                <button
+                  onClick={() => setShowSimulationModal(false)}
+                  className="ml-2 px-3 py-1.5 text-[var(--foreground)]/60 hover:text-[var(--destructive)] rounded-lg cursor-pointer"
+                >
+                  <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                    <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
+                  </svg>
+                </button>
+              </div>
             </div>
-          )}
+
+            {/* Modal Body - Simulation Canvas */}
+            <div className="flex-1 overflow-auto p-6 bg-[var(--background)]">
+              <div
+                className="relative overflow-hidden border border-[var(--border)] rounded-xl bg-white cursor-grab active:cursor-grabbing min-h-[400px]"
+                onMouseDown={handleSimMouseDown}
+                onMouseMove={handleSimMouseMove}
+                onMouseUp={handleSimMouseUp}
+                onMouseLeave={handleSimMouseUp}
+                onWheel={handleSimWheel}
+              >
+                <div
+                  className="absolute top-0 left-0 p-8"
+                  style={{
+                    transform: `translate(${simPan.x}px, ${simPan.y}px) scale(${simScale})`,
+                    transformOrigin: "top left",
+                  }}
+                >
+                  {simulation.labels.map((label, idx) => {
+                    // Always render front and back horizontally within each label,
+                    // regardless of overall layout mode (side-by-side or top-bottom).
+                    const isSideBySide = simViewMode === "side-by-side";
+                    const labelGap = 40;
+                    const sideGap = 24;
+                    const innerLabelWidth = mmToPx(widthMm) * 2 + sideGap;
+                    const innerLabelHeight = mmToPx(heightMm);
+                    const labelWidth = innerLabelWidth;
+                    const labelHeight = innerLabelHeight;
+                    const top = isSideBySide ? 0 : idx * (labelHeight + labelGap);
+                    const left = isSideBySide ? idx * (labelWidth + labelGap) : 0;
+
+                    return (
+                      <div
+                        key={idx}
+                        className="absolute"
+                        style={{ top, left, width: labelWidth, height: labelHeight }}
+                      >
+                        <div className="text-sm font-semibold text-[var(--foreground)] mb-2 flex items-center gap-2">
+                          <span className="w-6 h-6 rounded-full bg-[var(--primary)] text-white flex items-center justify-center text-xs">
+                            {idx + 1}
+                          </span>
+                          Label {idx + 1}
+                        </div>
+                        <div className="flex flex-row gap-4">
+                          {(["front", "back"] as const).map((side) => {
+                            const sidePadding = getPadding(side);
+                            const displayLabel = `label ${idx + 1} ${side}`;
+                            return (
+                              <div key={side} className="space-y-1">
+                                <div className="text-xs font-medium text-[var(--foreground)]/60 capitalize flex items-center gap-2">
+                                  <span className={`w-2 h-2 rounded-full ${side === "front" ? "bg-[var(--accent)]" : "bg-[var(--secondary)]"}`} />
+                                  {displayLabel}
+                                </div>
+                                <svg width={mmToPx(widthMm)} height={mmToPx(heightMm)} className="bg-white border border-[var(--border)] shadow-sm">
+                                  {label[side].map((r) => (
+                                    <g key={r.regionId}>
+                                      <rect
+                                        x={mmToPx(r.x)}
+                                        y={mmToPx(r.y)}
+                                        width={mmToPx(r.widthMm)}
+                                        height={mmToPx(r.heightMm)}
+                                        fill={r.type === "fixed" ? "rgba(37,99,235,0.08)" : "rgba(5,150,98,0.08)"}
+                                        stroke={r.type === "fixed" ? "#2563EB" : "#059669"}
+                                      />
+                                      <foreignObject
+                                        x={mmToPx(r.x + sidePadding.left)}
+                                        y={mmToPx(r.y + sidePadding.top)}
+                                        width={mmToPx(r.widthMm - sidePadding.left - sidePadding.right)}
+                                        height={mmToPx(r.heightMm - sidePadding.top - sidePadding.bottom)}
+                                      >
+                                        <div
+                                          className="leading-tight overflow-hidden"
+                                          style={{
+                                            fontFamily: config.fontId ? "SplitFont, sans-serif" : "sans-serif",
+                                            fontSize: Math.max(8, mmToPx(config.fontSizeMm) * 0.8),
+                                          }}
+                                        >
+                                          {r.text.split("\n").map((line, i) => (
+                                            <div key={i}>{line}</div>
+                                          ))}
+                                        </div>
+                                      </foreignObject>
+                                      <text
+                                        x={mmToPx(r.x + r.widthMm - 2)}
+                                        y={mmToPx(r.y + 8)}
+                                        textAnchor="end"
+                                        fontSize={10}
+                                        fill={r.type === "fixed" ? "#2563EB" : "#059669"}
+                                      >
+                                        {r.regionId}
+                                      </text>
+                                    </g>
+                                  ))}
+                                </svg>
+                              </div>
+                            );
+                          })}
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+
+              {simulation.unplacedText && (
+                <div className="mt-4 p-4 bg-red-50 border border-red-200 rounded-xl text-sm text-[var(--destructive)] flex items-center gap-2">
+                  <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                    <path strokeLinecap="round" strokeLinejoin="round" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" />
+                  </svg>
+                  Unplaced text: {simulation.unplacedText}
+                </div>
+              )}
+            </div>
+
+            {/* Modal Footer */}
+            <div className="px-6 py-4 border-t border-[var(--border)] bg-white flex items-center justify-between">
+              <div className="flex items-center gap-4">
+                <div className="text-sm text-[var(--foreground)]/60">
+                  {simulation.labels.length} label{simulation.labels.length > 1 ? "s" : ""} generated
+                </div>
+                <div className="relative">
+                  <button
+                    onClick={() => setShowExportMenu(!showExportMenu)}
+                    disabled={exporting}
+                    className="px-3 py-1.5 border border-[var(--border)] rounded-lg text-xs hover:bg-[var(--muted)] cursor-pointer flex items-center gap-1"
+                  >
+                    <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                      <path strokeLinecap="round" strokeLinejoin="round" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4" />
+                    </svg>
+                    Export
+                    <svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                      <path strokeLinecap="round" strokeLinejoin="round" d="M19 9l-7 7-7-7" />
+                    </svg>
+                  </button>
+                  {showExportMenu && (
+                    <div className="absolute bottom-full left-0 mb-1 bg-white border border-[var(--border)] rounded-lg shadow-[var(--shadow-lg)] py-1 min-w-[140px] z-10">
+                      <button
+                        onClick={handleExportAI}
+                        disabled={exporting}
+                        className="w-full px-3 py-2 text-left text-xs hover:bg-[var(--muted)] cursor-pointer flex items-center gap-2"
+                      >
+                        <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                          <path strokeLinecap="round" strokeLinejoin="round" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
+                        </svg>
+                        Illustrator (.ai)
+                      </button>
+                      <button
+                        onClick={handleExportPDF}
+                        disabled={exporting}
+                        className="w-full px-3 py-2 text-left text-xs hover:bg-[var(--muted)] cursor-pointer flex items-center gap-2"
+                      >
+                        <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                          <path strokeLinecap="round" strokeLinejoin="round" d="M7 21h10a2 2 0 002-2V9.414a1 1 0 00-.293-.707l-5.414-5.414A1 1 0 0012.586 3H7a2 2 0 00-2 2v14a2 2 0 002 2z" />
+                        </svg>
+                        PDF (.pdf)
+                      </button>
+                    </div>
+                  )}
+                </div>
+              </div>
+              <button
+                onClick={() => setShowSimulationModal(false)}
+                className="px-5 py-2 bg-[var(--primary)] text-white rounded-lg text-sm font-semibold hover:bg-[var(--primary)]/90 transition-all cursor-pointer"
+              >
+                Close
+              </button>
+            </div>
+          </div>
         </div>
       )}
 
@@ -1471,19 +2177,37 @@ export default function SplitWorkspace() {
         </div>
       )}
 
-      <div className="flex border-b border-[var(--border)]">
-        <button
-          onClick={() => setActiveTab("editor")}
-          className={`px-4 py-2 text-sm font-medium cursor-pointer ${activeTab === "editor" ? "border-b-2 border-[var(--primary)] text-[var(--primary)]" : "text-[var(--foreground)]/60"}`}
-        >
-          Editor
-        </button>
-        <button
-          onClick={() => setActiveTab("configs")}
-          className={`px-4 py-2 text-sm font-medium cursor-pointer ${activeTab === "configs" ? "border-b-2 border-[var(--primary)] text-[var(--primary)]" : "text-[var(--foreground)]/60"}`}
-        >
-          Saved Configs
-        </button>
+      <div className="flex items-center justify-between border-b border-[var(--border)]">
+        <div className="flex">
+          <button
+            onClick={() => setActiveTab("editor")}
+            className={`px-4 py-2 text-sm font-medium cursor-pointer ${activeTab === "editor" ? "border-b-2 border-[var(--primary)] text-[var(--primary)]" : "text-[var(--foreground)]/60"}`}
+          >
+            Editor
+          </button>
+          <button
+            onClick={() => setActiveTab("configs")}
+            className={`px-4 py-2 text-sm font-medium cursor-pointer ${activeTab === "configs" ? "border-b-2 border-[var(--primary)] text-[var(--primary)]" : "text-[var(--foreground)]/60"}`}
+          >
+            Saved Configs
+          </button>
+        </div>
+        <div className="flex items-center gap-2 pr-2">
+          <button
+            onClick={handleSave}
+            disabled={config.regions.length === 0}
+            className="px-3 py-1.5 border border-[var(--border)] rounded-lg text-xs cursor-pointer"
+          >
+            Save Configs
+          </button>
+          <button
+            onClick={handleRunSimulation}
+            disabled={config.regions.length === 0}
+            className="px-4 py-1.5 bg-[var(--accent)] text-white rounded-lg text-xs font-semibold disabled:opacity-40 cursor-pointer"
+          >
+            Run Simulation
+          </button>
+        </div>
       </div>
 
       {activeTab === "editor" ? renderEditor() : renderConfigs()}

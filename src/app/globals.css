@@ -71,3 +71,10 @@ input[type="number"]::-webkit-outer-spin-button {
     scroll-behavior: auto !important;
   }
 }
+
+/* Animated dash flow for connection lines */
+@keyframes dashFlow {
+  to {
+    stroke-dashoffset: -8;
+  }
+}
