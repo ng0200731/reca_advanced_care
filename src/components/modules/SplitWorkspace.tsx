@@ -790,37 +790,20 @@ export default function SplitWorkspace() {
           svgContent += `<rect x="${sideX + mmToPx(r.x)}" y="${sideY + mmToPx(r.y)}" width="${mmToPx(r.widthMm)}" height="${mmToPx(r.heightMm)}" fill="${regionColor}" stroke="${strokeColor}" class="region-rect"/>`;
           svgContent += `<text x="${sideX + mmToPx(r.x + r.widthMm - 2)}" y="${sideY + mmToPx(r.y + 8)}" text-anchor="end" fill="${strokeColor}" class="region-text">${r.regionId}</text>`;
 
-          // Text content - wrapped by computing approximate chars per line
+          // Text content — reuse the EXACT lines the simulation already wrapped
+          // (same as the web preview). We never re-wrap here, so the SVG line
+          // breaks match the on-screen result 1:1.
           if (r.text) {
             const textX = sideX + mmToPx(r.x + sidePadding.left);
             const textY = sideY + mmToPx(r.y + sidePadding.top);
-            const textWidthMm = r.widthMm - sidePadding.left - sidePadding.right;
             const textHeightMm = r.heightMm - sidePadding.top - sidePadding.bottom;
             const fontSizePx = Math.max(8, mmToPx(ptToMm(config.fontSizePt)));
             const lineHeight = fontSizePx * 1.25;
-            const charWidth = fontSizePx * 0.5;
-            const maxChars = Math.max(1, Math.floor(mmToPx(textWidthMm) / charWidth));
             const maxLines = Math.max(1, Math.floor(mmToPx(textHeightMm) / lineHeight));
 
-            const allLines: string[] = [];
-            r.text.split("\n").forEach((paragraph) => {
-              const words = paragraph.split(/\s+/);
-              let cur = "";
-              for (const w of words) {
-                const test = cur ? cur + " " + w : w;
-                if (test.length <= maxChars) {
-                  cur = test;
-                } else {
-                  if (cur) allLines.push(cur);
-                  cur = w;
-                }
-              }
-              if (cur) allLines.push(cur);
-            });
-
-            const visibleLines = allLines.slice(0, maxLines);
+            const visibleLines = r.text.split("\n").slice(0, maxLines);
             visibleLines.forEach((line, lineIdx) => {
-              svgContent += `<text x="${textX}" y="${textY + fontSizePx * (lineIdx + 1)}" font-size="${fontSizePx}" fill="#333">${escapeXml(line)}</text>`;
+              svgContent += `<text x="${textX}" y="${textY + fontSizePx + lineHeight * lineIdx}" font-size="${fontSizePx}" fill="#333">${escapeXml(line)}</text>`;
             });
           }
         });
@@ -1027,32 +1010,16 @@ export default function SplitWorkspace() {
           // Region ID
           svgContent += `  <text x="${rx + rw - 5}" y="${ry + 12}" text-anchor="end" font-family="${fontFamilyAttr}" font-size="10" fill="${strokeColor}">${escapeXml(r.regionId)}</text>\n`;
 
-          // Text content
+          // Text content — reuse the EXACT lines the simulation already wrapped
+          // (same as the web preview). No re-wrapping, so line breaks match 1:1.
           if (r.text) {
             const textX = rx + sidePadding.left * pxPerMm;
             const textY = ry + sidePadding.top * pxPerMm;
             const fontSizePt = bodyFontSizePt;
             const lineHeight = fontSizePt * 1.25;
-            const charWidth = fontSizePt * 0.5;
-            const maxChars = Math.max(1, Math.floor((rw - (sidePadding.left + sidePadding.right) * pxPerMm) / charWidth));
             const maxLines = Math.max(1, Math.floor((rh - (sidePadding.top + sidePadding.bottom) * pxPerMm) / lineHeight));
 
-            const lines: string[] = [];
-            r.text.split("\n").forEach((para) => {
-              const words = para.split(/\s+/);
-              let cur = "";
-              for (const w of words) {
-                const test = cur ? cur + " " + w : w;
-                if (test.length <= maxChars) {
-                  cur = test;
-                } else {
-                  if (cur) lines.push(cur);
-                  cur = w;
-                }
-              }
-              if (cur) lines.push(cur);
-            });
-
+            const lines = r.text.split("\n");
             const visibleLines = lines.slice(0, maxLines);
             visibleLines.forEach((line, lineIdx) => {
               const hasConn = config.connectionText && line.includes(config.connectionText);
@@ -1219,30 +1186,15 @@ export default function SplitWorkspace() {
             drawText(r.regionId, rx + rw - 5, ry + 12, 10, stroke, "right");
 
             if (r.text) {
+              // Reuse the EXACT lines the simulation already wrapped (same as the
+              // web preview). No re-wrapping, so line breaks match 1:1.
               const textX = rx + sidePadding.left * pxPerMm;
               const textY = ry + sidePadding.top * pxPerMm;
               const fontSizePt = bodyFontSizePt;
               const lineHeight = fontSizePt * 1.25;
-              const charWidth = fontSizePt * 0.5;
-              const maxChars = Math.max(1, Math.floor((rw - (sidePadding.left + sidePadding.right) * pxPerMm) / charWidth));
               const maxLines = Math.max(1, Math.floor((rh - (sidePadding.top + sidePadding.bottom) * pxPerMm) / lineHeight));
 
-              const lines: string[] = [];
-              r.text.split("\n").forEach((para) => {
-                const words = para.split(/\s+/);
-                let cur = "";
-                for (const w of words) {
-                  const test = cur ? cur + " " + w : w;
-                  if (test.length <= maxChars) {
-                    cur = test;
-                  } else {
-                    if (cur) lines.push(cur);
-                    cur = w;
-                  }
-                }
-                if (cur) lines.push(cur);
-              });
-
+              const lines = r.text.split("\n");
               const visibleLines = lines.slice(0, maxLines);
               visibleLines.forEach((line, lineIdx) => {
                 const hasConn = config.connectionText && line.includes(config.connectionText);
