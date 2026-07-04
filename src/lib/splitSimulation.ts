@@ -23,18 +23,35 @@ export type SimulationResult = {
   unplacedText: string;
 };
 
+// Measure the REAL rendered width of text in the actual font, using canvas.
+// Cached per (font) so repeated measurements stay fast.
+let _measureCanvas: HTMLCanvasElement | null = null;
+function measureTextWidthMm(text: string, fontSizePt: number, fontFamily: string): number {
+  if (typeof document === "undefined") {
+    // SSR fallback: rough estimate (won't run in browser).
+    return text.length * ((fontSizePt * 25.4) / 72) * 0.5;
+  }
+  if (!_measureCanvas) _measureCanvas = document.createElement("canvas");
+  const ctx = _measureCanvas.getContext("2d");
+  if (!ctx) return text.length * ((fontSizePt * 25.4) / 72) * 0.5;
+  ctx.font = `${fontSizePt}pt "${fontFamily}"`;
+  const widthPx = ctx.measureText(text).width;
+  // Canvas measures in CSS px at 96 DPI; convert to mm.
+  return (widthPx * 25.4) / 96;
+}
+
 function wrapText(
   text: string,
-  maxWidth: number,
-  maxHeight: number,
-  charWidth: number,
-  lineHeight: number,
+  maxWidthMm: number,
+  maxHeightMm: number,
+  fontSizePt: number,
+  fontFamily: string,
+  lineHeightMm: number,
   allowSplit: boolean,
   connectionText: string
 ): { keep: string; remainder: string; splitAtWord: boolean } {
   const words = text.trim().split(/\s+/).filter((w) => w.length > 0);
-  const maxCharsPerLine = Math.max(1, Math.floor(maxWidth / charWidth));
-  const maxLines = Math.max(1, Math.floor(maxHeight / lineHeight));
+  const maxLines = Math.max(1, Math.floor(maxHeightMm / lineHeightMm));
 
   const keepLines: string[] = [];
   let currentLine = "";
@@ -51,30 +68,51 @@ function wrapText(
     return false;
   };
 
-  const connectionLen = connectionText.length;
-  const splitChunkSize = Math.max(1, maxCharsPerLine - connectionLen);
-
   for (let i = 0; i < words.length; i++) {
     const word = words[i];
+    const testLine = currentLine ? currentLine + " " + word : word;
 
-    // Word itself is too long for one line
-    if (word.length > maxCharsPerLine) {
+    // Measure the ACTUAL rendered width — does it cross the region edge?
+    if (measureTextWidthMm(testLine, fontSizePt, fontFamily) <= maxWidthMm) {
+      currentLine = testLine;
+      continue;
+    }
+
+    // The word does not fit on the current line as-is.
+    // Is the word itself wider than a whole line?
+    if (measureTextWidthMm(word, fontSizePt, fontFamily) > maxWidthMm) {
       if (!allowSplit) {
+        // No splitting: whole word moves to the next region/label.
+        if (currentLine) {
+          if (!pushCurrentLine()) {
+            remainder = words.slice(i).join(" ");
+            break;
+          }
+        }
         remainder = words.slice(i).join(" ");
         break;
       }
-      if (!pushCurrentLine()) {
+      // Splitting allowed: push what we have, then break the word by measuring.
+      if (currentLine && !pushCurrentLine()) {
         remainder = words.slice(i).join(" ");
         break;
       }
       let w = word;
-      while (w.length > maxCharsPerLine) {
+      while (measureTextWidthMm(w + connectionText, fontSizePt, fontFamily) > maxWidthMm) {
         if (keepLines.length >= maxLines) {
           remainder = w + (i + 1 < words.length ? " " + words.slice(i + 1).join(" ") : "");
           break;
         }
-        keepLines.push(w.slice(0, splitChunkSize) + connectionText);
-        w = w.slice(splitChunkSize);
+        // Find the largest prefix that fits together with the connection text.
+        let cut = 1;
+        while (
+          cut < w.length &&
+          measureTextWidthMm(w.slice(0, cut + 1) + connectionText, fontSizePt, fontFamily) <= maxWidthMm
+        ) {
+          cut++;
+        }
+        keepLines.push(w.slice(0, cut) + connectionText);
+        w = w.slice(cut);
         splitAtWord = true;
       }
       if (remainder) break;
@@ -82,16 +120,12 @@ function wrapText(
       continue;
     }
 
-    const testLine = currentLine ? currentLine + " " + word : word;
-    if (testLine.length <= maxCharsPerLine) {
-      currentLine = testLine;
-    } else {
-      if (!pushCurrentLine()) {
-        remainder = words.slice(i).join(" ");
-        break;
-      }
-      currentLine = word;
+    // Word fits on a line by itself: push current line, start new line with word.
+    if (!pushCurrentLine()) {
+      remainder = words.slice(i).join(" ");
+      break;
     }
+    currentLine = word;
   }
 
   if (!remainder && currentLine) {
@@ -111,21 +145,15 @@ function getRegionText(region: SplitRegion, sources: SplitContentSource[]): stri
   return `[${source.label}]`;
 }
 
-
-
 export function simulateOverflow(
   config: SplitConfiguration,
   layoutWidthMm: number,
   layoutHeightMm: number,
-  padding: { top: number; right: number; bottom: number; left: number }
+  padding: { top: number; right: number; bottom: number; left: number },
+  fontFamily = "sans-serif"
 ): SimulationResult {
   const fontSizePt = config.fontSizePt || 8;
-  // Font size is authored in points; region geometry is in mm, so convert.
-  // The authored size is the TRUE rendered size (WYSIWYG) — no scaling factor.
   const renderedFontSizeMm = (fontSizePt * 25.4) / 72;
-  // leading-tight (1.25 line-height) with a small vertical safety margin so
-  // text is never clipped at the bottom of a region.
-  const charWidth = renderedFontSizeMm * 0.5;
   const lineHeight = renderedFontSizeMm * 1.25 * 1.02;
 
   const labels: SimulatedLabel[] = [];
@@ -178,8 +206,6 @@ export function simulateOverflow(
   };
 
   // For each overflow chain, find its start (no incoming) and end (no outgoing).
-  // After a label, the remainder at the end moves back to the start so the next
-  // physical label continues the chain from the beginning.
   const getChainStartsAndEnds = () => {
     const hasIncoming = new Set(
       config.regions.filter((r) => r.overflowTargetId).map((r) => r.overflowTargetId)
@@ -242,7 +268,8 @@ export function simulateOverflow(
           text,
           availableWidth,
           availableHeight,
-          charWidth,
+          fontSizePt,
+          fontFamily,
           lineHeight,
           config.allowSplitText,
           config.connectionText ?? ""

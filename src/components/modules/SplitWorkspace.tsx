@@ -682,7 +682,9 @@ export default function SplitWorkspace() {
 
   const handleRunSimulation = () => {
     if (!selectedLayout?.details) return;
-    const result = simulateOverflow(config, widthMm, heightMm, padding);
+    const selectedFont = fonts.find((f) => String(f.id) === config.fontId);
+    const fontName = selectedFont?.font_name || "sans-serif";
+    const result = simulateOverflow(config, widthMm, heightMm, padding, fontName);
     const fixedRegions = config.regions.filter((r) => r.type === "fixed");
     if (fixedRegions.length > 0 && result.labels.length > 0) {
       setShowFixedDialog(true);
