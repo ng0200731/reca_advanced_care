@@ -81,7 +81,7 @@ export default function SplitWorkspace() {
   const [config, setConfig] = useState<SplitConfiguration>({
     name: "",
     layoutId: "",
-    fontSizeMm: 3,
+    fontSizePt: 8,
     allowSplitText: true,
     connectionText: "-",
     imageOpacity: 0.3,
@@ -101,6 +101,7 @@ export default function SplitWorkspace() {
   const [showSimulationModal, setShowSimulationModal] = useState(false);
   const [showExportMenu, setShowExportMenu] = useState(false);
   const [exporting, setExporting] = useState(false);
+  const [showContextPopup, setShowContextPopup] = useState(false);
   const [expandedSections, setExpandedSections] = useState<Record<string, boolean>>({});
   const [simViewMode, setSimViewMode] = useState<"side-by-side" | "top-bottom">("side-by-side");
   const [viewLabelIndex, setViewLabelIndex] = useState(0);
@@ -110,6 +111,27 @@ export default function SplitWorkspace() {
 
   const svgRef = useRef<SVGSVGElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
+
+  // React attaches wheel listeners as passive, so e.preventDefault() in a JSX
+  // onWheel is ignored and the page scrolls while zooming. Attach a native
+  // non-passive listener via a callback ref so preventDefault() actually works
+  // and the canvas zooms without moving the surrounding scroll container.
+  const wheelCleanupRef = useRef<(() => void) | null>(null);
+  const canvasWheelRef = useCallback((el: HTMLDivElement | null) => {
+    if (wheelCleanupRef.current) {
+      wheelCleanupRef.current();
+      wheelCleanupRef.current = null;
+    }
+    if (el) {
+      const handler = (e: WheelEvent) => {
+        e.preventDefault();
+        const delta = e.deltaY > 0 ? -0.5 : 0.5;
+        setScale((s) => Math.max(2, Math.min(10, s + delta)));
+      };
+      el.addEventListener("wheel", handler, { passive: false });
+      wheelCleanupRef.current = () => el.removeEventListener("wheel", handler);
+    }
+  }, []);
 
   const { widthMm, heightMm } = useMemo(() => getLayoutSize(selectedLayout), [selectedLayout]);
 
@@ -239,6 +261,7 @@ export default function SplitWorkspace() {
 
   const mmToPx = (mm: number) => mm * scale;
   const pxToMm = (px: number) => px / scale;
+  const ptToMm = (pt: number) => (pt * 25.4) / 72;
 
   const getMouseMm = (e: React.MouseEvent | MouseEvent): { x: number; y: number } => {
     const target = (e as React.MouseEvent).currentTarget;
@@ -760,7 +783,7 @@ export default function SplitWorkspace() {
             const textY = sideY + mmToPx(r.y + sidePadding.top);
             const textWidthMm = r.widthMm - sidePadding.left - sidePadding.right;
             const textHeightMm = r.heightMm - sidePadding.top - sidePadding.bottom;
-            const fontSizePx = Math.max(8, mmToPx(config.fontSizeMm) * 0.8);
+            const fontSizePx = Math.max(8, mmToPx(ptToMm(config.fontSizePt)));
             const lineHeight = fontSizePx * 1.25;
             const charWidth = fontSizePx * 0.5;
             const maxChars = Math.max(1, Math.floor(mmToPx(textWidthMm) / charWidth));
@@ -811,14 +834,13 @@ export default function SplitWorkspace() {
   const renderSectionHeader = (key: string, title: string, action?: React.ReactNode) => {
     const isOpen = !!expandedSections[key];
     return (
-      <button
-        type="button"
-        onClick={() => toggleSection(key)}
-        className="w-full flex items-center justify-between text-left cursor-pointer"
-      >
-        <h3 className="font-semibold text-sm">{title}</h3>
-        <div className="flex items-center gap-2">
-          {action}
+      <div className="flex items-center justify-between gap-2">
+        <button
+          type="button"
+          onClick={() => toggleSection(key)}
+          className="flex-1 flex items-center justify-between text-left cursor-pointer"
+        >
+          <h3 className="font-semibold text-sm">{title}</h3>
           <svg
             className={`w-4 h-4 text-[var(--foreground)]/60 transition-transform duration-200 ${
               isOpen ? "rotate-180" : ""
@@ -830,8 +852,9 @@ export default function SplitWorkspace() {
           >
             <path strokeLinecap="round" strokeLinejoin="round" d="M19 9l-7 7-7-7" />
           </svg>
-        </div>
-      </button>
+        </button>
+        {action}
+      </div>
     );
   };
 
@@ -911,6 +934,132 @@ export default function SplitWorkspace() {
     }
   };
 
+  // Builds an Illustrator-ready SVG string with editable <text> elements using
+  // the selected font's real name at the size shown in the simulation view.
+  // Coordinates are in points (viewBox unit = 1pt) while the root width/height
+  // are in mm, so the artboard opens at exact physical dimensions.
+  const buildIllustratorSvg = (): { svg: string; widthMm: number; heightMm: number } => {
+    if (!simulation) return { svg: "", widthMm: 0, heightMm: 0 };
+
+    const fontName = fonts.find((f) => String(f.id) === config.fontId)?.font_name || "sans-serif";
+    const isSideBySide = simViewMode === "side-by-side";
+    const sideGapMm = 6;
+    const labelGapMm = 10;
+    const marginMm = 6;
+    const headerHeightMm = 8;
+    const labelCount = simulation.labels.length;
+
+    const labelInnerWidthMm = widthMm * 2 + sideGapMm;
+    const labelInnerHeightMm = heightMm + headerHeightMm;
+
+    const svgWidthMm = isSideBySide
+      ? labelCount * labelInnerWidthMm + (labelCount - 1) * labelGapMm + marginMm * 2
+      : labelInnerWidthMm + marginMm * 2;
+    const svgHeightMm = isSideBySide
+      ? labelInnerHeightMm + marginMm * 2
+      : labelCount * labelInnerHeightMm + (labelCount - 1) * labelGapMm + marginMm * 2;
+
+    const pxPerMm = 72 / 25.4;
+    const svgWidth = svgWidthMm * pxPerMm;
+    const svgHeight = svgHeightMm * pxPerMm;
+
+    const escapeXml = (str: string): string => str
+      .replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;")
+      .replace(/"/g, "&quot;").replace(/'/g, "&apos;");
+
+    const fontFamilyAttr = escapeXml(fontName);
+    // WYSIWYG: authored points are the true size, no scaling factor.
+    const bodyFontSizePt = Math.max(4, config.fontSizePt);
+
+    let svgContent = `<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" width="${svgWidthMm}mm" height="${svgHeightMm}mm" viewBox="0 0 ${svgWidth} ${svgHeight}">
+  <title>${escapeXml(config.name || "Simulation")}</title>
+  <rect width="${svgWidth}" height="${svgHeight}" fill="#FFFFFF"/>
+`;
+
+    simulation.labels.forEach((label, idx) => {
+      const labelX = isSideBySide
+        ? (marginMm + idx * (labelInnerWidthMm + labelGapMm)) * pxPerMm
+        : marginMm * pxPerMm;
+      const labelY = isSideBySide
+        ? marginMm * pxPerMm
+        : (marginMm + idx * (labelInnerHeightMm + labelGapMm)) * pxPerMm;
+
+      // Label header
+      const headerText = `Label ${idx + 1}`;
+      svgContent += `  <text x="${labelX + 5 * pxPerMm}" y="${labelY + 15}" font-family="${fontFamilyAttr}" font-size="14" font-weight="bold" fill="#1E3A5F">${escapeXml(headerText)}</text>\n`;
+
+      const sideY = labelY + headerHeightMm * pxPerMm;
+
+      (["front", "back"] as const).forEach((side, sideIdx) => {
+        const sideX = labelX + (sideIdx === 0 ? 0 : widthMm * pxPerMm + sideGapMm * pxPerMm);
+        const sidePadding = getPadding(side);
+
+        // Side label
+        svgContent += `  <text x="${sideX + 5 * pxPerMm}" y="${labelY + headerHeightMm * pxPerMm - 5}" font-family="${fontFamilyAttr}" font-size="11" fill="#666666">${escapeXml(side)}</text>\n`;
+
+        // Background
+        svgContent += `  <rect x="${sideX}" y="${sideY}" width="${widthMm * pxPerMm}" height="${heightMm * pxPerMm}" fill="none" stroke="#E5E7EB" stroke-width="1"/>\n`;
+
+        label[side].forEach((r) => {
+          const fillColor = r.type === "fixed" ? "rgba(37,99,235,0.08)" : "rgba(5,150,98,0.08)";
+          const strokeColor = r.type === "fixed" ? "#2563EB" : "#059669";
+          const rx = sideX + r.x * pxPerMm;
+          const ry = sideY + r.y * pxPerMm;
+          const rw = r.widthMm * pxPerMm;
+          const rh = r.heightMm * pxPerMm;
+
+          svgContent += `  <rect x="${rx}" y="${ry}" width="${rw}" height="${rh}" fill="${fillColor}" stroke="${strokeColor}" stroke-width="1"/>\n`;
+
+          // Region ID
+          svgContent += `  <text x="${rx + rw - 5}" y="${ry + 12}" text-anchor="end" font-family="${fontFamilyAttr}" font-size="10" fill="${strokeColor}">${escapeXml(r.regionId)}</text>\n`;
+
+          // Text content
+          if (r.text) {
+            const textX = rx + sidePadding.left * pxPerMm;
+            const textY = ry + sidePadding.top * pxPerMm;
+            const fontSizePt = bodyFontSizePt;
+            const lineHeight = fontSizePt * 1.25;
+            const charWidth = fontSizePt * 0.5;
+            const maxChars = Math.max(1, Math.floor((rw - (sidePadding.left + sidePadding.right) * pxPerMm) / charWidth));
+            const maxLines = Math.max(1, Math.floor((rh - (sidePadding.top + sidePadding.bottom) * pxPerMm) / lineHeight));
+
+            const lines: string[] = [];
+            r.text.split("\n").forEach((para) => {
+              const words = para.split(/\s+/);
+              let cur = "";
+              for (const w of words) {
+                const test = cur ? cur + " " + w : w;
+                if (test.length <= maxChars) {
+                  cur = test;
+                } else {
+                  if (cur) lines.push(cur);
+                  cur = w;
+                }
+              }
+              if (cur) lines.push(cur);
+            });
+
+            const visibleLines = lines.slice(0, maxLines);
+            visibleLines.forEach((line, lineIdx) => {
+              const hasConn = config.connectionText && line.includes(config.connectionText);
+              const fill = hasConn ? "#059669" : "#333333";
+              const lineY = textY + (lineIdx + 1) * lineHeight - fontSizePt * 0.2;
+              svgContent += `  <text x="${textX}" y="${lineY}" font-family="${fontFamilyAttr}" font-size="${fontSizePt}" fill="${fill}">${escapeXml(line)}</text>\n`;
+            });
+
+            if (lines.length > maxLines || r.overflowed) {
+              svgContent += `  <text x="${textX + rw - 5}" y="${textY + maxLines * lineHeight}" text-anchor="end" font-family="${fontFamilyAttr}" font-size="8" fill="#EF4444">+</text>\n`;
+            }
+          }
+        });
+      });
+    });
+
+    svgContent += `</svg>`;
+    return { svg: svgContent, widthMm: svgWidthMm, heightMm: svgHeightMm };
+  };
+
   const handleExportAI = async () => {
     setExporting(true);
     try {
@@ -918,9 +1067,33 @@ export default function SplitWorkspace() {
         setMessage("No simulation data to export");
         return;
       }
+      const { svg } = buildIllustratorSvg();
+      const blob = new Blob([svg], { type: "image/svg+xml;charset=utf-8" });
+      downloadBlob(blob, `${config.name || "simulation"}.svg`);
+      setMessage("SVG exported for Illustrator");
+    } catch (err) {
+      console.error(err);
+      setMessage("Export failed: " + (err as Error).message);
+    } finally {
+      setExporting(false);
+      setShowExportMenu(false);
+    }
+  };
 
-      // Create a PDF with editable text using jsPDF
-      // Illustrator opens PDF natively and preserves text editability
+  const handleExportAIFile = async () => {
+    setExporting(true);
+    try {
+      if (!simulation) {
+        setMessage("No simulation data to export");
+        return;
+      }
+
+      // A modern .ai file IS a PDF. We build a real vector PDF with jsPDF —
+      // native <text> objects (editable in Illustrator), the selected font
+      // embedded, and true 72dpi points so the layout matches the simulation
+      // exactly. Working in unit:"pt" lets us reuse the same coordinate math
+      // as the on-screen/SVG output (all offsets are already in points).
+      const pxPerMm = 72 / 25.4;
       const isSideBySide = simViewMode === "side-by-side";
       const sideGapMm = 6;
       const labelGapMm = 10;
@@ -928,150 +1101,161 @@ export default function SplitWorkspace() {
       const headerHeightMm = 8;
       const labelCount = simulation.labels.length;
 
-      // Calculate dimensions
       const labelInnerWidthMm = widthMm * 2 + sideGapMm;
       const labelInnerHeightMm = heightMm + headerHeightMm;
 
-      const pageWmm = isSideBySide
+      const svgWidthMm = isSideBySide
         ? labelCount * labelInnerWidthMm + (labelCount - 1) * labelGapMm + marginMm * 2
         : labelInnerWidthMm + marginMm * 2;
-      const pageHmm = isSideBySide
+      const svgHeightMm = isSideBySide
         ? labelInnerHeightMm + marginMm * 2
         : labelCount * labelInnerHeightMm + (labelCount - 1) * labelGapMm + marginMm * 2;
 
+      const pageW = svgWidthMm * pxPerMm; // in pt
+      const pageH = svgHeightMm * pxPerMm;
+
       const doc = new jsPDF({
-        orientation: pageWmm > pageHmm ? "landscape" : "portrait",
-        unit: "mm",
-        format: [pageWmm, pageHmm],
-        putOnlyUsedFonts: true,
-        floatPrecision: 16,
+        orientation: pageW > pageH ? "landscape" : "portrait",
+        unit: "pt",
+        format: [pageW, pageH],
       });
 
-      // Add font - try to use Microsoft YaHei (微软雅黑) for Chinese support
-      // Note: jsPDF supports standard PDF fonts. For full Chinese support,
-      // the font needs to be embedded. We'll use Helvetica as fallback.
-      doc.setFont("helvetica");
+      // Embed the selected font so text stays editable AND renders as 微软雅黑
+      // (not a fallback) in Illustrator. Falls back to Helvetica if none.
+      let bodyFontName = "helvetica";
+      const selectedFont = fonts.find((f) => String(f.id) === config.fontId);
+      if (selectedFont?.id) {
+        try {
+          const fontRes = await fetch(`/api/fonts/file/${selectedFont.id}`);
+          if (fontRes.ok) {
+            const buf = await fontRes.arrayBuffer();
+            const bytes = new Uint8Array(buf);
+            let binary = "";
+            const chunk = 0x8000;
+            for (let i = 0; i < bytes.length; i += chunk) {
+              binary += String.fromCharCode(...bytes.subarray(i, i + chunk));
+            }
+            const base64 = btoa(binary);
+            const vfsName = "SplitFont.ttf";
+            doc.addFileToVFS(vfsName, base64);
+            doc.addFont(vfsName, "SplitFont", "normal");
+            bodyFontName = "SplitFont";
+          }
+        } catch (err) {
+          console.warn("Font embed failed, using Helvetica:", err);
+        }
+      }
 
-      // Render each label
+      const drawText = (
+        text: string,
+        x: number,
+        y: number,
+        sizePt: number,
+        rgb: [number, number, number],
+        align: "left" | "right" = "left"
+      ) => {
+        doc.setFont(bodyFontName, "normal");
+        doc.setFontSize(sizePt);
+        doc.setTextColor(rgb[0], rgb[1], rgb[2]);
+        doc.text(text, x, y, { align, baseline: "alphabetic" });
+      };
+
+      // White artboard background (fixes the transparent→black issue).
+      doc.setFillColor(255, 255, 255);
+      doc.rect(0, 0, pageW, pageH, "F");
+
+      const bodyFontSizePt = Math.max(4, config.fontSizePt); // WYSIWYG, no *0.8
+
       simulation.labels.forEach((label, idx) => {
         const labelX = isSideBySide
-          ? marginMm + idx * (labelInnerWidthMm + labelGapMm)
-          : marginMm;
+          ? (marginMm + idx * (labelInnerWidthMm + labelGapMm)) * pxPerMm
+          : marginMm * pxPerMm;
         const labelY = isSideBySide
-          ? marginMm
-          : marginMm + idx * (labelInnerHeightMm + labelGapMm);
+          ? marginMm * pxPerMm
+          : (marginMm + idx * (labelInnerHeightMm + labelGapMm)) * pxPerMm;
 
-        // Label header
-        doc.setFontSize(14);
-        doc.setTextColor(30, 58, 95);
-        doc.setFont("helvetica", "bold");
-        doc.text(`Label ${idx + 1}`, labelX + 2, labelY + 6);
+        drawText(`Label ${idx + 1}`, labelX + 5 * pxPerMm, labelY + 15, 14, [30, 58, 95]);
 
-        const sideY = labelY + headerHeightMm;
+        const sideY = labelY + headerHeightMm * pxPerMm;
 
-        // Front and back sides
         (["front", "back"] as const).forEach((side, sideIdx) => {
-          const sideX = labelX + (sideIdx === 0 ? 0 : widthMm + sideGapMm);
+          const sideX = labelX + (sideIdx === 0 ? 0 : widthMm * pxPerMm + sideGapMm * pxPerMm);
           const sidePadding = getPadding(side);
 
-          // Side label
-          doc.setFontSize(11);
-          doc.setTextColor(102, 102, 102);
-          doc.setFont("helvetica", "normal");
-          doc.text(side, sideX + 2, labelY + headerHeightMm - 1);
+          drawText(side, sideX + 5 * pxPerMm, labelY + headerHeightMm * pxPerMm - 5, 11, [102, 102, 102]);
 
-          // Side background (white rectangle with border)
+          // Side background outline
           doc.setDrawColor(229, 231, 235);
-          doc.setLineWidth(0.2);
-          doc.rect(sideX, sideY, widthMm, heightMm, "S");
+          doc.setLineWidth(1);
+          doc.rect(sideX, sideY, widthMm * pxPerMm, heightMm * pxPerMm, "S");
 
-          // Regions
           label[side].forEach((r) => {
-            const regionColor = r.type === "fixed" ? [37, 99, 235] : [5, 150, 98];
-            const strokeColor = r.type === "fixed" ? [37, 99, 235] : [5, 150, 98];
-            const rx = sideX + r.x;
-            const ry = sideY + r.y;
-            const rw = r.widthMm;
-            const rh = r.heightMm;
+            // Solid light equivalents of the on-screen rgba(...,0.08) fills.
+            const fill: [number, number, number] = r.type === "fixed" ? [238, 243, 253] : [235, 247, 242];
+            const stroke: [number, number, number] = r.type === "fixed" ? [37, 99, 235] : [5, 150, 98];
+            const rx = sideX + r.x * pxPerMm;
+            const ry = sideY + r.y * pxPerMm;
+            const rw = r.widthMm * pxPerMm;
+            const rh = r.heightMm * pxPerMm;
 
-            // Region rectangle fill (light)
-            doc.setFillColor(regionColor[0], regionColor[1], regionColor[2]);
-            doc.setDrawColor(strokeColor[0], strokeColor[1], strokeColor[2]);
-            doc.setLineWidth(0.3);
+            doc.setFillColor(fill[0], fill[1], fill[2]);
+            doc.setDrawColor(stroke[0], stroke[1], stroke[2]);
+            doc.setLineWidth(1);
             doc.rect(rx, ry, rw, rh, "FD");
 
-            // Region ID
-            doc.setFontSize(8);
-            doc.setTextColor(strokeColor[0], strokeColor[1], strokeColor[2]);
-            doc.text(r.regionId, rx + rw - 2, ry + 3, { align: "right" });
+            drawText(r.regionId, rx + rw - 5, ry + 12, 10, stroke, "right");
 
-            // Text content - editable text
             if (r.text) {
-              const textX = rx + sidePadding.left;
-              const textY = ry + sidePadding.top;
-              const textWidth = rw - sidePadding.left - sidePadding.right;
-              const textHeight = rh - sidePadding.top - sidePadding.bottom;
-              const fontSizePt = Math.max(6, config.fontSizeMm * 2.83); // mm to points
-              const lineHeightPt = fontSizePt * 1.25;
-              const charWidthMm = config.fontSizeMm * 0.5;
-              const maxChars = Math.max(1, Math.floor(textWidth / charWidthMm));
-              const maxLines = Math.max(1, Math.floor(textHeight / (lineHeightPt / 2.83)));
+              const textX = rx + sidePadding.left * pxPerMm;
+              const textY = ry + sidePadding.top * pxPerMm;
+              const fontSizePt = bodyFontSizePt;
+              const lineHeight = fontSizePt * 1.25;
+              const charWidth = fontSizePt * 0.5;
+              const maxChars = Math.max(1, Math.floor((rw - (sidePadding.left + sidePadding.right) * pxPerMm) / charWidth));
+              const maxLines = Math.max(1, Math.floor((rh - (sidePadding.top + sidePadding.bottom) * pxPerMm) / lineHeight));
 
-              // Wrap text into lines
-              const allLines: string[] = [];
-              r.text.split("\n").forEach((paragraph) => {
-                const words = paragraph.split(/\s+/);
+              const lines: string[] = [];
+              r.text.split("\n").forEach((para) => {
+                const words = para.split(/\s+/);
                 let cur = "";
                 for (const w of words) {
                   const test = cur ? cur + " " + w : w;
                   if (test.length <= maxChars) {
                     cur = test;
                   } else {
-                    if (cur) allLines.push(cur);
+                    if (cur) lines.push(cur);
                     cur = w;
                   }
                 }
-                if (cur) allLines.push(cur);
+                if (cur) lines.push(cur);
               });
 
-              // Output visible lines as editable text
-              doc.setFontSize(fontSizePt);
-              doc.setTextColor(51, 51, 51);
-              doc.setFont("helvetica", "normal");
-
-              const visibleLines = allLines.slice(0, maxLines);
+              const visibleLines = lines.slice(0, maxLines);
               visibleLines.forEach((line, lineIdx) => {
-                const lineYPos = textY + (lineIdx + 1) * (lineHeightPt / 2.83);
-                if (lineYPos < ry + rh - sidePadding.bottom) {
-                  // Check if this line contains connection text
-                  const hasConnection = config.connectionText && line.includes(config.connectionText);
-                  if (hasConnection) {
-                    doc.setTextColor(5, 150, 98); // Green for split text
-                  } else {
-                    doc.setTextColor(51, 51, 51);
-                  }
-                  doc.text(line, textX, lineYPos);
-                }
+                const hasConn = config.connectionText && line.includes(config.connectionText);
+                const fill: [number, number, number] = hasConn ? [5, 150, 98] : [51, 51, 51];
+                const lineY = textY + (lineIdx + 1) * lineHeight - fontSizePt * 0.2;
+                drawText(line, textX, lineY, fontSizePt, fill);
               });
 
-              // Overflow indicator
-              if (allLines.length > maxLines || r.overflowed) {
-                doc.setTextColor(239, 68, 68);
-                doc.setFontSize(8);
-                doc.text("+", textX + textWidth - 1, textY + (maxLines + 0.5) * (lineHeightPt / 2.83), { align: "right" });
+              if (lines.length > maxLines || r.overflowed) {
+                drawText("+", textX + rw - 5, textY + maxLines * lineHeight, 8, [239, 68, 68], "right");
               }
             }
           });
         });
       });
 
-      // Save as .ai file (PDF with .ai extension - Illustrator opens this natively)
       const pdfBlob = doc.output("blob");
       downloadBlob(pdfBlob, `${config.name || "simulation"}.ai`);
-      setMessage("AI file exported successfully (editable text)");
+      setMessage(
+        bodyFontName === "SplitFont"
+          ? "Illustrator file (.ai) exported with embedded font"
+          : "Illustrator file (.ai) exported (no font selected — using Helvetica)"
+      );
     } catch (err) {
       console.error(err);
-      setMessage("Failed to export AI file: " + (err as Error).message);
+      setMessage("Export failed: " + (err as Error).message);
     } finally {
       setExporting(false);
       setShowExportMenu(false);
@@ -1090,6 +1274,8 @@ export default function SplitWorkspace() {
     try {
       const payload = {
         ...config,
+        // Persist the point value to the legacy `fontSizeMm` DB column.
+        fontSizeMm: config.fontSizePt,
         regions: config.regions.map((r) => ({
           ...r,
           overflowTargetId: r.overflowTargetId || undefined,
@@ -1126,7 +1312,8 @@ export default function SplitWorkspace() {
         name: data.name,
         layoutId: data.layoutId,
         fontId: data.fontId ?? undefined,
-        fontSizeMm: data.fontSizeMm,
+        // Legacy DB column `fontSizeMm` now stores the point value.
+        fontSizePt: data.fontSizeMm,
         allowSplitText: data.allowSplitText,
         connectionText: data.connectionText ?? undefined,
         imageData: data.imageData ?? undefined,
@@ -1168,7 +1355,7 @@ export default function SplitWorkspace() {
         setConfig({
           name: "",
           layoutId: "",
-          fontSizeMm: 3,
+          fontSizePt: 8,
           allowSplitText: true,
           connectionText: "-",
           imageOpacity: 0.3,
@@ -1187,7 +1374,7 @@ export default function SplitWorkspace() {
     setConfig({
       name: "",
       layoutId: "",
-      fontSizeMm: 3,
+      fontSizePt: 8,
       allowSplitText: true,
       connectionText: "-",
       imageOpacity: 0.3,
@@ -1210,14 +1397,6 @@ export default function SplitWorkspace() {
     const renderSvg = (side: "front" | "back", showLines = false) => {
       const sidePadding = getPadding(side);
       const sideImage = parseSideImage(config.imageData, side);
-      const handleWheelZoom = (e: React.WheelEvent) => {
-        // Zoom with Ctrl/Cmd + wheel, or just wheel over canvas
-        if (e.ctrlKey || e.metaKey || true) {
-          e.preventDefault();
-          const delta = e.deltaY > 0 ? -0.5 : 0.5;
-          setScale((s) => Math.max(2, Math.min(10, s + delta)));
-        }
-      };
       return (
         <svg
           key={side}
@@ -1230,7 +1409,6 @@ export default function SplitWorkspace() {
           onMouseMove={handleSvgMouseMove}
           onMouseUp={handleSvgMouseUp}
           onMouseLeave={handleSvgMouseUp}
-          onWheel={handleWheelZoom}
         >
             {sideImage && showImage && (
               <image
@@ -1424,6 +1602,7 @@ export default function SplitWorkspace() {
       return (
         <div
           key={side}
+          ref={canvasWheelRef}
           className={`space-y-2 p-2 rounded-lg border-2 transition-colors ${activeSide === side ? "border-[var(--primary)] bg-[var(--primary)]/5" : "border-transparent hover:border-[var(--border)]"}`}
           onClick={() => setActiveSide(side)}
         >
@@ -1639,7 +1818,7 @@ export default function SplitWorkspace() {
                       );
                     })}
                   </div>
-                  <div className={`relative flex ${viewMode === "side-by-side" ? "flex-row" : "flex-col"} gap-4`}>
+                  <div ref={canvasWheelRef} className={`relative flex ${viewMode === "side-by-side" ? "flex-row" : "flex-col"} gap-4`}>
                     {renderSvg("front")}
                     {renderSvg("back")}
                     {renderConnectionOverlay()}
@@ -1691,14 +1870,14 @@ export default function SplitWorkspace() {
                   />
                 </div>
                 <div>
-                  <label className="text-xs text-[var(--foreground)]/60">Font size (mm)</label>
+                  <label className="text-xs text-[var(--foreground)]/60">Font size (pt)</label>
                   <input
                     type="number"
-                    min={1}
-                    max={20}
+                    min={4}
+                    max={72}
                     step={0.5}
-                    value={config.fontSizeMm}
-                    onChange={(e) => setConfig((c) => ({ ...c, fontSizeMm: Number(e.target.value) }))}
+                    value={config.fontSizePt}
+                    onChange={(e) => setConfig((c) => ({ ...c, fontSizePt: Number(e.target.value) }))}
                     className="w-full px-2 py-1.5 border border-[var(--border)] rounded-lg text-sm"
                   />
                 </div>
@@ -1764,22 +1943,57 @@ export default function SplitWorkspace() {
                       </select>
                     </div>
                   )}
-                  <div>
-                    <label className="text-xs text-[var(--foreground)]/60">Content source for {selectedRegion.regionId}</label>
-                    <p className="text-xs text-[var(--foreground)]/40 mb-1">Pick one shared source for this region.</p>
-                    <select
-                      value={selectedRegion.contentSourceId || ""}
-                      onChange={(e) => updateRegion(selectedRegion.id, { contentSourceId: e.target.value || undefined })}
-                      className="w-full px-2 py-1.5 border border-[var(--border)] rounded-lg text-sm"
-                    >
-                      <option value="">None</option>
-                      {config.contentSources.map((s) => (
-                        <option key={s.id} value={s.id}>
-                          {s.label}
-                        </option>
-                      ))}
-                    </select>
-                  </div>
+                  {(() => {
+                    const selectedSource = config.contentSources.find((s) => s.id === selectedRegion.contentSourceId);
+                    const contextPreview = !selectedSource
+                      ? null
+                      : selectedSource.type === "manual"
+                        ? (selectedSource.manualText || "(empty)")
+                        : (() => {
+                            const t = translations.find((tt) => tt.id === selectedSource.translationId);
+                            return t?.table_name ? `Translation: ${t.table_name}` : selectedSource.label;
+                          })();
+                    return (
+                      <div
+                        className="relative"
+                        onMouseEnter={() => contextPreview !== null && setShowContextPopup(true)}
+                        onMouseLeave={() => setShowContextPopup(false)}
+                      >
+                        <div className="flex items-center gap-1">
+                          <label className="text-xs text-[var(--foreground)]/60">Content source for {selectedRegion.regionId}</label>
+                          {contextPreview !== null && (
+                            <span
+                              className="w-4 h-4 flex items-center justify-center rounded-full border border-[var(--border)] text-[10px] text-[var(--foreground)]/60"
+                              aria-hidden="true"
+                            >
+                              i
+                            </span>
+                          )}
+                        </div>
+                        <p className="text-xs text-[var(--foreground)]/40 mb-1">Pick one shared source for this region.</p>
+                        <select
+                          value={selectedRegion.contentSourceId || ""}
+                          onChange={(e) => {
+                            setShowContextPopup(false);
+                            updateRegion(selectedRegion.id, { contentSourceId: e.target.value || undefined });
+                          }}
+                          className="w-full px-2 py-1.5 border border-[var(--border)] rounded-lg text-sm"
+                        >
+                          <option value="">None</option>
+                          {config.contentSources.map((s) => (
+                            <option key={s.id} value={s.id}>
+                              {s.label}
+                            </option>
+                          ))}
+                        </select>
+                        {contextPreview !== null && showContextPopup && (
+                          <div className="absolute left-0 top-full mt-1 z-20 w-full max-h-40 overflow-auto bg-white border border-[var(--border)] rounded-lg shadow-[var(--shadow-lg)] p-2 text-xs text-[var(--foreground)] whitespace-pre-wrap break-words pointer-events-none">
+                            {contextPreview}
+                          </div>
+                        )}
+                      </div>
+                    );
+                  })()}
                   <div className="grid grid-cols-2 gap-2 text-xs">
                     <div>X: {selectedRegion.x.toFixed(1)}mm</div>
                     <div>Y: {selectedRegion.y.toFixed(1)}mm</div>
@@ -1996,7 +2210,7 @@ export default function SplitWorkspace() {
                                           className="leading-tight overflow-hidden"
                                           style={{
                                             fontFamily: config.fontId ? "SplitFont, sans-serif" : "sans-serif",
-                                            fontSize: Math.max(8, mmToPx(config.fontSizeMm) * 0.8),
+                                            fontSize: Math.max(8, mmToPx(ptToMm(config.fontSizePt))),
                                           }}
                                         >
                                           {r.text.split("\n").map((line, i) => (
@@ -2066,6 +2280,16 @@ export default function SplitWorkspace() {
                         <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
                           <path strokeLinecap="round" strokeLinejoin="round" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
                         </svg>
+                        SVG for Illustrator
+                      </button>
+                      <button
+                        onClick={handleExportAIFile}
+                        disabled={exporting}
+                        className="w-full px-3 py-2 text-left text-xs hover:bg-[var(--muted)] cursor-pointer flex items-center gap-2"
+                      >
+                        <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                          <path strokeLinecap="round" strokeLinejoin="round" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
+                        </svg>
                         Illustrator (.ai)
                       </button>
                       <button
@@ -2121,7 +2345,7 @@ export default function SplitWorkspace() {
       )}
     </div>
   );
-};
+  }
 
   const renderConfigs = () => (
     <div className="space-y-4">

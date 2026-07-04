@@ -119,11 +119,12 @@ export function simulateOverflow(
   layoutHeightMm: number,
   padding: { top: number; right: number; bottom: number; left: number }
 ): SimulationResult {
-  const fontSizeMm = config.fontSizeMm || 3;
-  // Match rendered text metrics: font is rendered at fontSize * 0.8 with
-  // leading-tight (1.25 line-height). Add a small vertical safety margin
-  // so text is never clipped at the bottom of a region.
-  const renderedFontSizeMm = fontSizeMm * 0.8;
+  const fontSizePt = config.fontSizePt || 8;
+  // Font size is authored in points; region geometry is in mm, so convert.
+  // The authored size is the TRUE rendered size (WYSIWYG) — no scaling factor.
+  const renderedFontSizeMm = (fontSizePt * 25.4) / 72;
+  // leading-tight (1.25 line-height) with a small vertical safety margin so
+  // text is never clipped at the bottom of a region.
   const charWidth = renderedFontSizeMm * 0.5;
   const lineHeight = renderedFontSizeMm * 1.25 * 1.02;
 

@@ -96,7 +96,8 @@ export type SplitConfiguration = {
   name: string;
   layoutId: string;
   fontId?: string;
-  fontSizeMm: number;
+  /** Font size in points (pt). Persisted to the legacy `fontSizeMm` DB column. */
+  fontSizePt: number;
   allowSplitText: boolean;
   connectionText?: string;
   imageData?: string;
