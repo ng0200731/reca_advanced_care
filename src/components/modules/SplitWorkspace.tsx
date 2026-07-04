@@ -189,15 +189,26 @@ export default function SplitWorkspace() {
   useEffect(() => {
     if (!config.fontId || fonts.length === 0) return;
     const font = fonts.find((f) => String(f.id) === config.fontId);
-    if (!font?.file_path) return;
-    const styleId = "split-workspace-font";
-    let style = document.getElementById(styleId) as HTMLStyleElement | null;
-    if (!style) {
-      style = document.createElement("style");
-      style.id = styleId;
-      document.head.appendChild(style);
-    }
-    style.textContent = `@font-face { font-family: 'SplitFont'; src: url('${font.file_path}'); }`;
+    if (!font) return;
+    // Load via the FontFace API using the font's ACTUAL NAME (font.font_name),
+    // not a generic alias. The old "SplitFont" alias breaks symbol fonts because
+    // the browser can't map the alias to the real font family inside the TTF.
+    let cancelled = false;
+    const face = new FontFace(font.font_name, `url(/api/fonts/file/${font.id})`);
+    face
+      .load()
+      .then((loaded) => {
+        if (!cancelled) document.fonts.add(loaded);
+      })
+      .catch((err) => console.warn("Split font load failed:", err));
+    return () => {
+      cancelled = true;
+      try {
+        document.fonts.delete(face);
+      } catch {
+        /* face may not have been added */
+      }
+    };
   }, [config.fontId, fonts]);
 
   const parseSideImage = (imageData: string | undefined, side: "front" | "back"): string | undefined => {
@@ -2209,7 +2220,9 @@ export default function SplitWorkspace() {
                                         <div
                                           className="leading-tight overflow-hidden"
                                           style={{
-                                            fontFamily: config.fontId ? "SplitFont, sans-serif" : "sans-serif",
+                                            fontFamily: config.fontId
+                                              ? `'${fonts.find((f) => String(f.id) === config.fontId)?.font_name || "sans-serif"}', sans-serif`
+                                              : "sans-serif",
                                             fontSize: Math.max(8, mmToPx(ptToMm(config.fontSizePt))),
                                           }}
                                         >
