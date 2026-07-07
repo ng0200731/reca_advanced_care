@@ -760,6 +760,129 @@ export default function SplitWorkspace() {
   const getConnectionTextFill = (line: string) =>
     config.connectionText && line.includes(config.connectionText) ? "#059669" : "#333333";
 
+  const measureTextWidthPt = (text: string, fontFamily: string, fontSizePt: number) => {
+    if (typeof document === "undefined") {
+      return text.length * fontSizePt * 0.5;
+    }
+    const canvas = document.createElement("canvas");
+    const ctx = canvas.getContext("2d");
+    if (!ctx) {
+      return text.length * fontSizePt * 0.5;
+    }
+    ctx.font = `${fontSizePt}pt "${fontFamily}"`;
+    const widthPx = ctx.measureText(text).width;
+    return (widthPx * 72) / 96;
+  };
+
+  const wrapTextForIllustrator = (
+    text: string,
+    maxWidthPt: number,
+    maxHeightPt: number,
+    fontFamily: string,
+    fontSizePt: number
+  ) => {
+    const normalized = text.replace(/\r\n/g, "\n").trim();
+    const lineHeightPt = fontSizePt * 1.25 * 1.02;
+    const maxLines = maxHeightPt > 0 ? Math.max(1, Math.floor(maxHeightPt / lineHeightPt)) : 0;
+    const lines: string[] = [];
+
+    if (!normalized || maxWidthPt <= 0 || maxLines <= 0) {
+      return { lines, lineHeightPt, overflow: normalized.length > 0 };
+    }
+
+    const paragraphs = normalized.split("\n");
+
+    const pushLine = (line: string) => {
+      if (lines.length < maxLines) {
+        lines.push(line.trim());
+        return true;
+      }
+      return false;
+    };
+
+    for (let p = 0; p < paragraphs.length; p++) {
+      const words = paragraphs[p].trim().split(/\s+/).filter(Boolean);
+      let currentLine = "";
+
+      if (words.length === 0) {
+        if (!pushLine("")) {
+          return { lines, lineHeightPt, overflow: true };
+        }
+        continue;
+      }
+
+      for (let i = 0; i < words.length; i++) {
+        const word = words[i];
+        const testLine = currentLine ? `${currentLine} ${word}` : word;
+
+        if (measureTextWidthPt(testLine, fontFamily, fontSizePt) <= maxWidthPt) {
+          currentLine = testLine;
+          continue;
+        }
+
+        if (measureTextWidthPt(word, fontFamily, fontSizePt) <= maxWidthPt) {
+          if (currentLine) {
+            if (!pushLine(currentLine)) {
+              return { lines, lineHeightPt, overflow: true };
+            }
+            currentLine = word;
+            continue;
+          }
+          currentLine = word;
+          continue;
+        }
+
+        if (!config.allowSplitText) {
+          if (currentLine && !pushLine(currentLine)) {
+            return { lines, lineHeightPt, overflow: true };
+          }
+          if (!pushLine(word)) {
+            return { lines, lineHeightPt, overflow: true };
+          }
+          currentLine = "";
+          continue;
+        }
+
+        if (currentLine) {
+          if (!pushLine(currentLine)) {
+            return { lines, lineHeightPt, overflow: true };
+          }
+          currentLine = "";
+        }
+
+        let remainingWord = word;
+        while (remainingWord) {
+          if (measureTextWidthPt(remainingWord, fontFamily, fontSizePt) <= maxWidthPt) {
+            currentLine = remainingWord;
+            remainingWord = "";
+            continue;
+          }
+
+          let cut = 1;
+          while (
+            cut < remainingWord.length &&
+            measureTextWidthPt(remainingWord.slice(0, cut + 1), fontFamily, fontSizePt) <= maxWidthPt
+          ) {
+            cut++;
+          }
+
+          if (!pushLine(remainingWord.slice(0, cut))) {
+            return { lines, lineHeightPt, overflow: true };
+          }
+          remainingWord = remainingWord.slice(cut);
+        }
+      }
+
+      if (currentLine) {
+        if (!pushLine(currentLine)) {
+          return { lines, lineHeightPt, overflow: true };
+        }
+      }
+    }
+
+    return { lines, lineHeightPt, overflow: false };
+  };
+
   const getRegionContentBox = (
     region: SimulatedRegion,
     sidePadding: { top: number; right: number; bottom: number; left: number },
@@ -1095,25 +1218,26 @@ export default function SplitWorkspace() {
           // Text content — reuse the EXACT lines the simulation already wrapped
           // (same as the web preview). No re-wrapping, so line breaks match 1:1.
           if (r.text) {
-            const textX = rx + sidePadding.left * pxPerMm;
-            const textY = ry + sidePadding.top * pxPerMm;
-            const fontSizePt = bodyFontSizePt;
-            const lineHeight = fontSizePt * 1.25;
-            const maxLines = Math.max(
-              1,
-              Math.floor((rh - (sidePadding.top + sidePadding.bottom) * pxPerMm) / lineHeight)
+            const contentBox = getRegionContentBox(r, sidePadding, pxPerMm);
+            const textX = sideX + contentBox.x;
+            const textY = sideY + contentBox.y;
+            const wrapped = wrapTextForIllustrator(
+              r.text,
+              contentBox.width,
+              contentBox.height,
+              fontName,
+              bodyFontSizePt
             );
 
-            const lines = r.text.split("\n");
-            const visibleLines = lines.slice(0, maxLines);
-            visibleLines.forEach((line, lineIdx) => {
+            wrapped.lines.forEach((line, lineIdx) => {
               const fill = getConnectionTextFill(line);
-              const lineY = textY + (lineIdx + 1) * lineHeight - fontSizePt * 0.2;
-              svgContent += `  <text x="${textX}" y="${lineY}" font-family="${fontFamilyAttr}" font-size="${fontSizePt}" fill="${fill}">${escapeXml(line)}</text>\n`;
+              const lineY =
+                textY + (lineIdx + 1) * wrapped.lineHeightPt - bodyFontSizePt * 0.2;
+              svgContent += `  <text x="${textX}" y="${lineY}" font-family="${fontFamilyAttr}" font-size="${bodyFontSizePt}" fill="${fill}">${escapeXml(line)}</text>\n`;
             });
 
-            if (lines.length > maxLines || r.overflowed) {
-              svgContent += `  <text x="${textX + rw - 5}" y="${textY + maxLines * lineHeight}" text-anchor="end" font-family="${fontFamilyAttr}" font-size="8" fill="#EF4444">+</text>\n`;
+            if (wrapped.overflow || r.overflowed) {
+              svgContent += `  <text x="${textX + contentBox.width - 3}" y="${textY + wrapped.lines.length * wrapped.lineHeightPt}" text-anchor="end" font-family="${fontFamilyAttr}" font-size="8" fill="#EF4444">+</text>\n`;
             }
           }
         });
@@ -1246,6 +1370,7 @@ export default function SplitWorkspace() {
       doc.rect(0, 0, pageW, pageH, "F");
 
       const bodyFontSizePt = Math.max(4, config.fontSizePt); // WYSIWYG, no *0.8
+      const fontName = getSimulationFontName();
 
       simulation.labels.forEach((label, idx) => {
         const labelX = isSideBySide
@@ -1287,26 +1412,34 @@ export default function SplitWorkspace() {
             drawText(r.regionId, rx + rw - 5, ry + 12, 10, stroke, "right");
 
             if (r.text) {
-              const textX = rx + sidePadding.left * pxPerMm;
-              const textY = ry + sidePadding.top * pxPerMm;
-              const fontSizePt = bodyFontSizePt;
-              const lineHeight = fontSizePt * 1.25;
-              const maxLines = Math.max(
-                1,
-                Math.floor((rh - (sidePadding.top + sidePadding.bottom) * pxPerMm) / lineHeight)
+              const contentBox = getRegionContentBox(r, sidePadding, pxPerMm);
+              const textX = sideX + contentBox.x;
+              const textY = sideY + contentBox.y;
+              const wrapped = wrapTextForIllustrator(
+                r.text,
+                contentBox.width,
+                contentBox.height,
+                fontName,
+                bodyFontSizePt
               );
 
-              const lines = r.text.split("\n");
-              const visibleLines = lines.slice(0, maxLines);
-              visibleLines.forEach((line, lineIdx) => {
+              wrapped.lines.forEach((line, lineIdx) => {
                 const fill: [number, number, number] =
                   getConnectionTextFill(line) === "#059669" ? [5, 150, 98] : [51, 51, 51];
-                const lineY = textY + (lineIdx + 1) * lineHeight - fontSizePt * 0.2;
-                drawText(line, textX, lineY, fontSizePt, fill);
+                const lineY =
+                  textY + (lineIdx + 1) * wrapped.lineHeightPt - bodyFontSizePt * 0.2;
+                drawText(line, textX, lineY, bodyFontSizePt, fill);
               });
 
-              if (lines.length > maxLines || r.overflowed) {
-                drawText("+", textX + rw - 5, textY + maxLines * lineHeight, 8, [239, 68, 68], "right");
+              if (wrapped.overflow || r.overflowed) {
+                drawText(
+                  "+",
+                  textX + contentBox.width - 3,
+                  textY + wrapped.lines.length * wrapped.lineHeightPt,
+                  8,
+                  [239, 68, 68],
+                  "right"
+                );
               }
             }
           });
