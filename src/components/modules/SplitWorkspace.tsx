@@ -4,6 +4,7 @@ import React, { useEffect, useState, useRef, useCallback, useMemo } from "react"
 import type { SplitConfiguration, SplitRegion, SplitContentSource } from "@/lib/types";
 import { simulateOverflow, applyFixedContentOption } from "@/lib/splitSimulation";
 import type { SimulatedRegion } from "@/lib/splitSimulation";
+import { getTextLineHeight, getTextLines } from "@/lib/textLayout";
 import { jsPDF } from "jspdf";
 
 type SavedLayout = {
@@ -701,7 +702,8 @@ export default function SplitWorkspace() {
         front: getPadding("front"),
         back: getPadding("back"),
       },
-      fontName
+      fontName,
+      scale
     );
     const fixedRegions = config.regions.filter((r) => r.type === "fixed");
     if (fixedRegions.length > 0 && result.labels.length > 0) {
@@ -912,12 +914,9 @@ export default function SplitWorkspace() {
     const textY = contentBox.y;
     const contentWidth = contentBox.width;
     const contentHeight = contentBox.height;
-    const lineHeight = fontSizeUnits * 1.25;
-    const maxLines =
-      contentHeight > 0 ? Math.max(1, Math.floor(contentHeight / lineHeight)) : 0;
-    const lines = region.text.split("\n");
+    const lineHeight = getTextLineHeight(fontSizeUnits);
+    const lines = getTextLines(region.text);
     const overflowFontSizeUnits = ptToMm(8) * unitsPerMm;
-    const visibleLines = maxLines > 0 ? lines.slice(0, maxLines) : [];
     const hasClippedContent = contentWidth <= 0 || contentHeight <= 0;
 
     return {
@@ -929,11 +928,11 @@ export default function SplitWorkspace() {
       clipY: contentBox.y,
       clipWidth: contentBox.width,
       clipHeight: contentBox.height,
-      visibleLines,
-      showOverflow: hasClippedContent ? lines.length > 0 : lines.length > maxLines || region.overflowed,
+      visibleLines: lines,
+      showOverflow: hasClippedContent ? lines.length > 0 : region.overflowed,
       overflowFontSizeUnits,
-      overflowX: Math.max(textX, textX + contentWidth - 3),
-      overflowY: textY + maxLines * lineHeight,
+      overflowX: Math.max(textX, contentBox.x + contentBox.width - 3),
+      overflowY: Math.max(textY + overflowFontSizeUnits, contentBox.y + contentBox.height - 3),
     };
   };
 
@@ -998,18 +997,12 @@ export default function SplitWorkspace() {
           // breaks match the on-screen result 1:1.
           if (r.text) {
             const layout = getRegionTextLayout(r, sidePadding, scale, bodyFontSizePx);
-            const clipId = `clip-${idx}-${side}-${r.regionId}`;
-            svgContent += `<clipPath id="${clipId}"><rect x="${sideX + layout.clipX}" y="${sideY + layout.clipY}" width="${layout.clipWidth}" height="${layout.clipHeight}"/></clipPath>`;
-            svgContent += `<g clip-path="url(#${clipId})">`;
-            layout.visibleLines.forEach((line, lineIdx) => {
-              const lineY =
-                layout.textY + (lineIdx + 1) * layout.lineHeight - layout.fontSizeUnits * 0.2;
-              svgContent += `<text x="${sideX + layout.textX}" y="${sideY + lineY}" font-size="${layout.fontSizeUnits}" fill="${getConnectionTextFill(line)}">${escapeXml(line)}</text>`;
-            });
+            svgContent += `<foreignObject x="${sideX + layout.clipX}" y="${sideY + layout.clipY}" width="${layout.clipWidth}" height="${layout.clipHeight}">`;
+            svgContent += `<div xmlns="http://www.w3.org/1999/xhtml" style="width:${layout.clipWidth}px;height:${layout.clipHeight}px;overflow:hidden;white-space:pre-wrap;overflow-wrap:${config.allowSplitText ? "anywhere" : "normal"};word-break:${config.allowSplitText ? "break-word" : "normal"};font-family:${escapeXml(fontName)}, Arial, sans-serif;font-size:${Math.max(4, config.fontSizePt)}pt;line-height:${1.25 * 1.02};color:#333333;">${escapeXml(r.text)}</div>`;
+            svgContent += `</foreignObject>`;
             if (layout.showOverflow && layout.clipWidth > 0 && layout.clipHeight > 0) {
               svgContent += `<text x="${sideX + layout.overflowX}" y="${sideY + layout.overflowY}" text-anchor="end" font-size="${layout.overflowFontSizeUnits}" fill="#EF4444">+</text>`;
             }
-            svgContent += `</g>`;
           }
         });
       });
@@ -1255,10 +1248,14 @@ export default function SplitWorkspace() {
         setMessage("No simulation data to export");
         return;
       }
-      const { svg } = buildIllustratorSvg();
+      const svg = exportToSVG();
+      if (!svg) {
+        setMessage("No simulation data to export");
+        return;
+      }
       const blob = new Blob([svg], { type: "image/svg+xml;charset=utf-8" });
       downloadBlob(blob, `${config.name || "simulation"}.svg`);
-      setMessage("SVG exported for Illustrator");
+      setMessage("SVG exported to match the web preview");
     } catch (err) {
       console.error(err);
       setMessage("Export failed: " + (err as Error).message);
@@ -1271,6 +1268,63 @@ export default function SplitWorkspace() {
   const handleExportAIFile = async () => {
     setExporting(true);
     try {
+      if (typeof window !== "undefined") {
+        const svgContent = exportToSVG();
+        if (!svgContent) {
+          setMessage("No simulation data to export");
+          return;
+        }
+
+        const isSideBySide = simViewMode === "side-by-side";
+        const sideGapMm = 6;
+        const labelGapMm = 10;
+        const marginMm = 6;
+        const labelCount = simulation!.labels.length;
+        const pageWmm = isSideBySide
+          ? labelCount * (widthMm * 2 + sideGapMm) + (labelCount - 1) * labelGapMm + marginMm * 2
+          : widthMm + marginMm * 2;
+        const pageHmm = isSideBySide
+          ? heightMm + marginMm * 2
+          : labelCount * (heightMm * 2 + sideGapMm) + (labelCount - 1) * labelGapMm + marginMm * 2;
+
+        const doc = new jsPDF({
+          orientation: pageWmm > pageHmm ? "landscape" : "portrait",
+          unit: "mm",
+          format: [pageWmm, pageHmm],
+        });
+
+        const svgBlob = new Blob([svgContent], { type: "image/svg+xml;charset=utf-8" });
+        const url = URL.createObjectURL(svgBlob);
+
+        try {
+          const img = await new Promise<HTMLImageElement>((resolve, reject) => {
+            const image = new Image();
+            image.onload = () => resolve(image);
+            image.onerror = reject;
+            image.src = url;
+          });
+
+          const canvas = document.createElement("canvas");
+          const dpi = 300;
+          const exportScale = dpi / 25.4;
+          canvas.width = Math.max(1, Math.round(pageWmm * exportScale));
+          canvas.height = Math.max(1, Math.round(pageHmm * exportScale));
+          const ctx = canvas.getContext("2d");
+          if (!ctx) throw new Error("Failed to create canvas context");
+
+          ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+          const pngDataUrl = canvas.toDataURL("image/png");
+
+          doc.addImage(pngDataUrl, "PNG", 0, 0, pageWmm, pageHmm);
+          const aiBlob = doc.output("blob");
+          downloadBlob(aiBlob, `${config.name || "simulation"}.ai`);
+          setMessage("Illustrator file (.ai) exported to match the web preview");
+        } finally {
+          URL.revokeObjectURL(url);
+        }
+        return;
+      }
+
       if (!simulation) {
         setMessage("No simulation data to export");
         return;

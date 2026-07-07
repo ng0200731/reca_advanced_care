@@ -1,3 +1,4 @@
+import { fitTextToBox } from "./textLayout";
 import type { SplitConfiguration, SplitRegion, SplitContentSource } from "./types";
 
 type RegionPadding = {
@@ -279,11 +280,10 @@ export function simulateOverflow(
   layoutWidthMm: number,
   layoutHeightMm: number,
   padding: SimulationPadding,
-  fontFamily = "sans-serif"
+  fontFamily = "sans-serif",
+  renderUnitsPerMm = 96 / 25.4
 ): SimulationResult {
   const fontSizePt = config.fontSizePt || 8;
-  const renderedFontSizeMm = (fontSizePt * 25.4) / 72;
-  const lineHeight = renderedFontSizeMm * 1.25 * 1.02;
 
   const labels: SimulatedLabel[] = [];
   const remainingByRegion: Record<string, string> = {};
@@ -407,30 +407,32 @@ export function simulateOverflow(
         simulatedRegion.text = text;
         remainingByRegion[region.regionId] = "";
       } else if (text && availableWidth > 0 && availableHeight > 0) {
-        const { keep, remainder } = wrapText(
+        const fitted = fitTextToBox({
           text,
-          availableWidth,
-          availableHeight,
-          fontSizePt,
+          width: availableWidth * renderUnitsPerMm,
+          height: availableHeight * renderUnitsPerMm,
+          unit: "px",
+          fontSizeUnit: "pt",
           fontFamily,
-          lineHeight,
-          config.allowSplitText,
-          config.connectionText ?? ""
-        );
+          fontSize: fontSizePt,
+          allowSplit: config.allowSplitText,
+          connectionText: config.connectionText ?? "",
+          safeWidthMargin: TEXT_SAFE_MARGIN_MM * renderUnitsPerMm,
+        });
 
-        simulatedRegion.text = keep;
-        simulatedRegion.overflowed = remainder.length > 0;
+        simulatedRegion.text = fitted.text;
+        simulatedRegion.overflowed = fitted.overflow;
         remainingByRegion[region.regionId] = "";
 
-        if (remainder.length > 0) {
+        if (fitted.remainder.length > 0) {
           hasOverflow = true;
           if (region.overflowTargetId && regionById.has(region.overflowTargetId)) {
             const targetText = remainingByRegion[region.overflowTargetId] || "";
             remainingByRegion[region.overflowTargetId] = targetText
-              ? `${targetText} ${remainder}`
-              : remainder;
+              ? `${targetText} ${fitted.remainder}`
+              : fitted.remainder;
           } else {
-            remainingByRegion[region.regionId] = remainder;
+            remainingByRegion[region.regionId] = fitted.remainder;
           }
         }
       }
