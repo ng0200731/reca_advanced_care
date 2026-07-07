@@ -39,6 +39,7 @@ type SavedSplit = {
 type SavedFont = {
   id: number;
   font_name: string;
+  filename?: string;
   file_path: string;
 };
 
@@ -57,6 +58,7 @@ type DragState =
 
 const MAX_REGIONS = 10;
 const SNAP_THRESHOLD_PX = 8;
+const CSS_PX_PER_MM = 96 / 25.4;
 
 function generateId(): string {
   return Math.random().toString(36).slice(2, 10);
@@ -275,6 +277,7 @@ export default function SplitWorkspace() {
   const mmToPx = (mm: number) => mm * scale;
   const pxToMm = (px: number) => px / scale;
   const ptToMm = (pt: number) => (pt * 25.4) / 72;
+  const getPreviewEquivalentPt = (fontSizePt: number) => fontSizePt * (CSS_PX_PER_MM / scale);
 
   const getMouseMm = (e: React.MouseEvent | MouseEvent): { x: number; y: number } => {
     const target = (e as React.MouseEvent).currentTarget;
@@ -762,127 +765,12 @@ export default function SplitWorkspace() {
   const getConnectionTextFill = (line: string) =>
     config.connectionText && line.includes(config.connectionText) ? "#059669" : "#333333";
 
-  const measureTextWidthPt = (text: string, fontFamily: string, fontSizePt: number) => {
-    if (typeof document === "undefined") {
-      return text.length * fontSizePt * 0.5;
-    }
-    const canvas = document.createElement("canvas");
-    const ctx = canvas.getContext("2d");
-    if (!ctx) {
-      return text.length * fontSizePt * 0.5;
-    }
-    ctx.font = `${fontSizePt}pt "${fontFamily}"`;
-    const widthPx = ctx.measureText(text).width;
-    return (widthPx * 72) / 96;
-  };
-
-  const wrapTextForIllustrator = (
-    text: string,
-    maxWidthPt: number,
-    maxHeightPt: number,
-    fontFamily: string,
-    fontSizePt: number
-  ) => {
-    const normalized = text.replace(/\r\n/g, "\n").trim();
-    const lineHeightPt = fontSizePt * 1.25 * 1.02;
-    const maxLines = maxHeightPt > 0 ? Math.max(1, Math.floor(maxHeightPt / lineHeightPt)) : 0;
-    const lines: string[] = [];
-
-    if (!normalized || maxWidthPt <= 0 || maxLines <= 0) {
-      return { lines, lineHeightPt, overflow: normalized.length > 0 };
-    }
-
-    const paragraphs = normalized.split("\n");
-
-    const pushLine = (line: string) => {
-      if (lines.length < maxLines) {
-        lines.push(line.trim());
-        return true;
-      }
-      return false;
+  const wrapTextForIllustrator = (text: string, fontSizePt: number) => {
+    return {
+      lines: getTextLines(text),
+      lineHeightPt: getTextLineHeight(fontSizePt),
+      overflow: false,
     };
-
-    for (let p = 0; p < paragraphs.length; p++) {
-      const words = paragraphs[p].trim().split(/\s+/).filter(Boolean);
-      let currentLine = "";
-
-      if (words.length === 0) {
-        if (!pushLine("")) {
-          return { lines, lineHeightPt, overflow: true };
-        }
-        continue;
-      }
-
-      for (let i = 0; i < words.length; i++) {
-        const word = words[i];
-        const testLine = currentLine ? `${currentLine} ${word}` : word;
-
-        if (measureTextWidthPt(testLine, fontFamily, fontSizePt) <= maxWidthPt) {
-          currentLine = testLine;
-          continue;
-        }
-
-        if (measureTextWidthPt(word, fontFamily, fontSizePt) <= maxWidthPt) {
-          if (currentLine) {
-            if (!pushLine(currentLine)) {
-              return { lines, lineHeightPt, overflow: true };
-            }
-            currentLine = word;
-            continue;
-          }
-          currentLine = word;
-          continue;
-        }
-
-        if (!config.allowSplitText) {
-          if (currentLine && !pushLine(currentLine)) {
-            return { lines, lineHeightPt, overflow: true };
-          }
-          if (!pushLine(word)) {
-            return { lines, lineHeightPt, overflow: true };
-          }
-          currentLine = "";
-          continue;
-        }
-
-        if (currentLine) {
-          if (!pushLine(currentLine)) {
-            return { lines, lineHeightPt, overflow: true };
-          }
-          currentLine = "";
-        }
-
-        let remainingWord = word;
-        while (remainingWord) {
-          if (measureTextWidthPt(remainingWord, fontFamily, fontSizePt) <= maxWidthPt) {
-            currentLine = remainingWord;
-            remainingWord = "";
-            continue;
-          }
-
-          let cut = 1;
-          while (
-            cut < remainingWord.length &&
-            measureTextWidthPt(remainingWord.slice(0, cut + 1), fontFamily, fontSizePt) <= maxWidthPt
-          ) {
-            cut++;
-          }
-
-          if (!pushLine(remainingWord.slice(0, cut))) {
-            return { lines, lineHeightPt, overflow: true };
-          }
-          remainingWord = remainingWord.slice(cut);
-        }
-      }
-
-      if (currentLine) {
-        if (!pushLine(currentLine)) {
-          return { lines, lineHeightPt, overflow: true };
-        }
-      }
-    }
-
-    return { lines, lineHeightPt, overflow: false };
   };
 
   const getRegionContentBox = (
@@ -1162,8 +1050,7 @@ export default function SplitWorkspace() {
       .replace(/"/g, "&quot;").replace(/'/g, "&apos;");
 
     const fontFamilyAttr = escapeXml(fontName);
-    // WYSIWYG: authored points are the true size, no scaling factor.
-    const bodyFontSizePt = Math.max(4, config.fontSizePt);
+    const bodyFontSizePt = getPreviewEquivalentPt(Math.max(4, config.fontSizePt));
 
     let svgContent = `<?xml version="1.0" encoding="UTF-8"?>
 <svg xmlns="http://www.w3.org/2000/svg" width="${svgWidthMm}mm" height="${svgHeightMm}mm" viewBox="0 0 ${svgWidth} ${svgHeight}">
@@ -1214,13 +1101,7 @@ export default function SplitWorkspace() {
             const contentBox = getRegionContentBox(r, sidePadding, pxPerMm);
             const textX = sideX + contentBox.x;
             const textY = sideY + contentBox.y;
-            const wrapped = wrapTextForIllustrator(
-              r.text,
-              contentBox.width,
-              contentBox.height,
-              fontName,
-              bodyFontSizePt
-            );
+            const wrapped = wrapTextForIllustrator(r.text, bodyFontSizePt);
 
             wrapped.lines.forEach((line, lineIdx) => {
               const fill = getConnectionTextFill(line);
@@ -1230,7 +1111,7 @@ export default function SplitWorkspace() {
             });
 
             if (wrapped.overflow || r.overflowed) {
-              svgContent += `  <text x="${textX + contentBox.width - 3}" y="${textY + wrapped.lines.length * wrapped.lineHeightPt}" text-anchor="end" font-family="${fontFamilyAttr}" font-size="8" fill="#EF4444">+</text>\n`;
+              svgContent += `  <text x="${rx + rw - 3}" y="${ry + rh - 3}" text-anchor="end" font-family="${fontFamilyAttr}" font-size="8" fill="#EF4444">+</text>\n`;
             }
           }
         });
@@ -1248,14 +1129,10 @@ export default function SplitWorkspace() {
         setMessage("No simulation data to export");
         return;
       }
-      const svg = exportToSVG();
-      if (!svg) {
-        setMessage("No simulation data to export");
-        return;
-      }
+      const { svg } = buildIllustratorSvg();
       const blob = new Blob([svg], { type: "image/svg+xml;charset=utf-8" });
       downloadBlob(blob, `${config.name || "simulation"}.svg`);
-      setMessage("SVG exported to match the web preview");
+      setMessage("Editable SVG exported for Illustrator");
     } catch (err) {
       console.error(err);
       setMessage("Export failed: " + (err as Error).message);
@@ -1268,73 +1145,13 @@ export default function SplitWorkspace() {
   const handleExportAIFile = async () => {
     setExporting(true);
     try {
-      if (typeof window !== "undefined") {
-        const svgContent = exportToSVG();
-        if (!svgContent) {
-          setMessage("No simulation data to export");
-          return;
-        }
-
-        const isSideBySide = simViewMode === "side-by-side";
-        const sideGapMm = 6;
-        const labelGapMm = 10;
-        const marginMm = 6;
-        const labelCount = simulation!.labels.length;
-        const pageWmm = isSideBySide
-          ? labelCount * (widthMm * 2 + sideGapMm) + (labelCount - 1) * labelGapMm + marginMm * 2
-          : widthMm + marginMm * 2;
-        const pageHmm = isSideBySide
-          ? heightMm + marginMm * 2
-          : labelCount * (heightMm * 2 + sideGapMm) + (labelCount - 1) * labelGapMm + marginMm * 2;
-
-        const doc = new jsPDF({
-          orientation: pageWmm > pageHmm ? "landscape" : "portrait",
-          unit: "mm",
-          format: [pageWmm, pageHmm],
-        });
-
-        const svgBlob = new Blob([svgContent], { type: "image/svg+xml;charset=utf-8" });
-        const url = URL.createObjectURL(svgBlob);
-
-        try {
-          const img = await new Promise<HTMLImageElement>((resolve, reject) => {
-            const image = new Image();
-            image.onload = () => resolve(image);
-            image.onerror = reject;
-            image.src = url;
-          });
-
-          const canvas = document.createElement("canvas");
-          const dpi = 300;
-          const exportScale = dpi / 25.4;
-          canvas.width = Math.max(1, Math.round(pageWmm * exportScale));
-          canvas.height = Math.max(1, Math.round(pageHmm * exportScale));
-          const ctx = canvas.getContext("2d");
-          if (!ctx) throw new Error("Failed to create canvas context");
-
-          ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
-          const pngDataUrl = canvas.toDataURL("image/png");
-
-          doc.addImage(pngDataUrl, "PNG", 0, 0, pageWmm, pageHmm);
-          const aiBlob = doc.output("blob");
-          downloadBlob(aiBlob, `${config.name || "simulation"}.ai`);
-          setMessage("Illustrator file (.ai) exported to match the web preview");
-        } finally {
-          URL.revokeObjectURL(url);
-        }
-        return;
-      }
-
       if (!simulation) {
         setMessage("No simulation data to export");
         return;
       }
 
-      // A modern .ai file IS a PDF. We build a real vector PDF with jsPDF —
-      // native <text> objects (editable in Illustrator), the selected font
-      // embedded, and true 72dpi points so the layout matches the simulation
-      // exactly. Working in unit:"pt" lets us reuse the same coordinate math
-      // as the on-screen/SVG output (all offsets are already in points).
+      // Modern Illustrator opens PDF-backed .ai files. Build vector PDF text,
+      // not a raster screenshot, so the text remains editable in Illustrator.
       const pxPerMm = 72 / 25.4;
       const isSideBySide = simViewMode === "side-by-side";
       const sideGapMm = 6;
@@ -1361,9 +1178,9 @@ export default function SplitWorkspace() {
         unit: "pt",
         format: [pageW, pageH],
       });
+      const aiTextFitMarginPt = 0.75;
 
-      // Embed the selected font so text stays editable AND renders as 微软雅黑
-      // (not a fallback) in Illustrator. Falls back to Helvetica if none.
+      // Embed the selected font so Illustrator uses the same font as preview.
       let bodyFontName = "helvetica";
       type EmbedState = { status: "no-font" } | { status: "embedded"; fontName: string } | { status: "embed-failed"; fontName: string; error: string };
       let embedState: EmbedState = { status: "no-font" };
@@ -1378,8 +1195,7 @@ export default function SplitWorkspace() {
           const buf = await fontRes.arrayBuffer();
           const bytes = new Uint8Array(buf);
 
-          // Safe chunked base64 conversion for large fonts (e.g. 15 MB 微软雅黑).
-          // Build an array of chunk strings, then join once to avoid O(n²) concat.
+          // Safe chunked base64 conversion for large font files.
           const chunkSize = 0x2000; // 8KB chunks to stay well under stack limits
           const chunks: string[] = [];
           for (let i = 0; i < bytes.length; i += chunkSize) {
@@ -1393,10 +1209,12 @@ export default function SplitWorkspace() {
           const binary = chunks.join("");
           const base64 = btoa(binary);
 
-          const vfsName = "SplitFont.ttf";
+          const ext = selectedFont.filename?.split(".").pop()?.toLowerCase() === "otf" ? "otf" : "ttf";
+          const vfsName = `SplitFont.${ext}`;
+          const embeddedFontName = selectedFont.font_name || "SplitFont";
           doc.addFileToVFS(vfsName, base64);
-          doc.addFont(vfsName, "SplitFont", "normal");
-          bodyFontName = "SplitFont";
+          doc.addFont(vfsName, embeddedFontName, "normal");
+          bodyFontName = embeddedFontName;
           embedState = { status: "embedded", fontName: selectedFont.font_name };
         } catch (err) {
           const errMsg = err instanceof Error ? err.message : String(err);
@@ -1411,20 +1229,35 @@ export default function SplitWorkspace() {
         y: number,
         sizePt: number,
         rgb: [number, number, number],
-        align: "left" | "right" = "left"
+        align: "left" | "right" = "left",
+        maxWidthPt?: number
       ) => {
         doc.setFont(bodyFontName, "normal");
         doc.setFontSize(sizePt);
         doc.setTextColor(rgb[0], rgb[1], rgb[2]);
-        doc.text(text, x, y, { align, baseline: "alphabetic" });
+
+        const textOptions: {
+          align: "left" | "right";
+          baseline: "alphabetic";
+          horizontalScale?: number;
+        } = { align, baseline: "alphabetic" };
+
+        if (maxWidthPt !== undefined && maxWidthPt > 0 && text.length > 0) {
+          const safeMaxWidthPt = Math.max(0.1, maxWidthPt - aiTextFitMarginPt);
+          const textWidthPt = doc.getTextWidth(text);
+          if (textWidthPt > safeMaxWidthPt) {
+            textOptions.horizontalScale = Math.max(0.01, safeMaxWidthPt / textWidthPt);
+          }
+        }
+
+        doc.text(text, x, y, textOptions);
       };
 
-      // White artboard background (fixes the transparent→black issue).
+      // White artboard background.
       doc.setFillColor(255, 255, 255);
       doc.rect(0, 0, pageW, pageH, "F");
 
-      const bodyFontSizePt = Math.max(4, config.fontSizePt); // WYSIWYG, no *0.8
-      const fontName = getSimulationFontName();
+      const bodyFontSizePt = getPreviewEquivalentPt(Math.max(4, config.fontSizePt));
 
       simulation.labels.forEach((label, idx) => {
         const labelX = isSideBySide
@@ -1469,27 +1302,21 @@ export default function SplitWorkspace() {
               const contentBox = getRegionContentBox(r, sidePadding, pxPerMm);
               const textX = sideX + contentBox.x;
               const textY = sideY + contentBox.y;
-              const wrapped = wrapTextForIllustrator(
-                r.text,
-                contentBox.width,
-                contentBox.height,
-                fontName,
-                bodyFontSizePt
-              );
+              const wrapped = wrapTextForIllustrator(r.text, bodyFontSizePt);
 
               wrapped.lines.forEach((line, lineIdx) => {
                 const fill: [number, number, number] =
                   getConnectionTextFill(line) === "#059669" ? [5, 150, 98] : [51, 51, 51];
                 const lineY =
                   textY + (lineIdx + 1) * wrapped.lineHeightPt - bodyFontSizePt * 0.2;
-                drawText(line, textX, lineY, bodyFontSizePt, fill);
+                drawText(line, textX, lineY, bodyFontSizePt, fill, "left", contentBox.width);
               });
 
               if (wrapped.overflow || r.overflowed) {
                 drawText(
                   "+",
-                  textX + contentBox.width - 3,
-                  textY + wrapped.lines.length * wrapped.lineHeightPt,
+                  rx + rw - 3,
+                  ry + rh - 3,
                   8,
                   [239, 68, 68],
                   "right"
@@ -1507,9 +1334,9 @@ export default function SplitWorkspace() {
       if (embedState.status === "embedded") {
         setMessage(`Illustrator file (.ai) exported with embedded font (${embedState.fontName})`);
       } else if (embedState.status === "embed-failed") {
-        setMessage(`Illustrator file (.ai) exported, but embedding ${embedState.fontName} failed (${embedState.error}) — using Helvetica`);
+        setMessage(`Illustrator file (.ai) exported, but embedding ${embedState.fontName} failed (${embedState.error}); using Helvetica`);
       } else {
-        setMessage("Illustrator file (.ai) exported (no font selected — using Helvetica)");
+        setMessage("Illustrator file (.ai) exported (no font selected; using Helvetica)");
       }
     } catch (err) {
       console.error(err);

@@ -70,6 +70,7 @@ function createProbe({
   fontFamily,
   fontSize,
   allowSplit,
+  overflow = "hidden",
 }: {
   width: number;
   height?: number;
@@ -78,6 +79,7 @@ function createProbe({
   fontFamily: string;
   fontSize: number;
   allowSplit: boolean;
+  overflow?: "hidden" | "visible";
 }) {
   const el = document.createElement("div");
   el.style.position = "fixed";
@@ -89,7 +91,7 @@ function createProbe({
   el.style.margin = "0";
   el.style.padding = "0";
   el.style.border = "0";
-  el.style.overflow = "hidden";
+  el.style.overflow = overflow;
   el.style.whiteSpace = "pre-wrap";
   el.style.overflowWrap = allowSplit ? "anywhere" : "normal";
   el.style.wordBreak = allowSplit ? "break-word" : "normal";
@@ -166,6 +168,7 @@ export function fitTextToBox({
     fontFamily,
     fontSize,
     allowSplit,
+    overflow: "visible",
   });
 
   try {
