@@ -3,6 +3,7 @@
 import React, { useEffect, useState, useRef, useCallback, useMemo } from "react";
 import type { SplitConfiguration, SplitRegion, SplitContentSource } from "@/lib/types";
 import { simulateOverflow, applyFixedContentOption } from "@/lib/splitSimulation";
+import type { SimulatedRegion } from "@/lib/splitSimulation";
 import { jsPDF } from "jspdf";
 
 type SavedLayout = {
@@ -680,11 +681,28 @@ export default function SplitWorkspace() {
     }
   };
 
-  const handleRunSimulation = () => {
+  const handleRunSimulation = async () => {
     if (!selectedLayout?.details) return;
     const selectedFont = fonts.find((f) => String(f.id) === config.fontId);
     const fontName = selectedFont?.font_name || "sans-serif";
-    const result = simulateOverflow(config, widthMm, heightMm, padding, fontName);
+    if (typeof document !== "undefined" && "fonts" in document) {
+      try {
+        await document.fonts.load(`${config.fontSizePt}pt "${fontName}"`, "Lorem ipsum");
+        await document.fonts.ready;
+      } catch {
+        // Continue with fallback metrics if the requested font cannot be preloaded.
+      }
+    }
+    const result = simulateOverflow(
+      config,
+      widthMm,
+      heightMm,
+      {
+        front: getPadding("front"),
+        back: getPadding("back"),
+      },
+      fontName
+    );
     const fixedRegions = config.regions.filter((r) => r.type === "fixed");
     if (fixedRegions.length > 0 && result.labels.length > 0) {
       setShowFixedDialog(true);
@@ -736,6 +754,66 @@ export default function SplitWorkspace() {
     setSimPan({ x: 0, y: 0 });
   };
 
+  const getSimulationFontName = () =>
+    fonts.find((f) => String(f.id) === config.fontId)?.font_name || "sans-serif";
+
+  const getConnectionTextFill = (line: string) =>
+    config.connectionText && line.includes(config.connectionText) ? "#059669" : "#333333";
+
+  const getRegionContentBox = (
+    region: SimulatedRegion,
+    sidePadding: { top: number; right: number; bottom: number; left: number },
+    unitsPerMm: number
+  ) => {
+    const contentXmm = Math.max(region.x, sidePadding.left);
+    const contentYmm = Math.max(region.y, sidePadding.top);
+    const contentRightMm = Math.min(region.x + region.widthMm, widthMm - sidePadding.right);
+    const contentBottomMm = Math.min(region.y + region.heightMm, heightMm - sidePadding.bottom);
+
+    return {
+      x: contentXmm * unitsPerMm,
+      y: contentYmm * unitsPerMm,
+      width: Math.max(0, (contentRightMm - contentXmm) * unitsPerMm),
+      height: Math.max(0, (contentBottomMm - contentYmm) * unitsPerMm),
+    };
+  };
+
+  const getRegionTextLayout = (
+    region: SimulatedRegion,
+    sidePadding: { top: number; right: number; bottom: number; left: number },
+    unitsPerMm: number,
+    fontSizeUnits: number
+  ) => {
+    const contentBox = getRegionContentBox(region, sidePadding, unitsPerMm);
+    const textX = contentBox.x;
+    const textY = contentBox.y;
+    const contentWidth = contentBox.width;
+    const contentHeight = contentBox.height;
+    const lineHeight = fontSizeUnits * 1.25;
+    const maxLines =
+      contentHeight > 0 ? Math.max(1, Math.floor(contentHeight / lineHeight)) : 0;
+    const lines = region.text.split("\n");
+    const overflowFontSizeUnits = ptToMm(8) * unitsPerMm;
+    const visibleLines = maxLines > 0 ? lines.slice(0, maxLines) : [];
+    const hasClippedContent = contentWidth <= 0 || contentHeight <= 0;
+
+    return {
+      fontSizeUnits,
+      lineHeight,
+      textX,
+      textY,
+      clipX: contentBox.x,
+      clipY: contentBox.y,
+      clipWidth: contentBox.width,
+      clipHeight: contentBox.height,
+      visibleLines,
+      showOverflow: hasClippedContent ? lines.length > 0 : lines.length > maxLines || region.overflowed,
+      overflowFontSizeUnits,
+      overflowX: Math.max(textX, textX + contentWidth - 3),
+      overflowY: textY + maxLines * lineHeight,
+    };
+  };
+
   const exportToSVG = (): string => {
     if (!simulation || !selectedLayout?.details) return "";
     const isSideBySide = simViewMode === "side-by-side";
@@ -744,6 +822,8 @@ export default function SplitWorkspace() {
     const headerHeight = 25;
     const labelInnerWidth = mmToPx(widthMm) * 2 + sideGap;
     const labelInnerHeight = mmToPx(heightMm);
+    const fontName = getSimulationFontName();
+    const bodyFontSizePx = Math.max(8, mmToPx(ptToMm(Math.max(4, config.fontSizePt))));
 
     // Always render front and back horizontally within each label, regardless of
     // overall layout mode (side-by-side or top-bottom).
@@ -756,7 +836,7 @@ export default function SplitWorkspace() {
 
     let svgContent = `<svg xmlns="http://www.w3.org/2000/svg" width="${svgWidth}" height="${svgHeight}" viewBox="0 0 ${svgWidth} ${svgHeight}">`;
     svgContent += `<defs><style>
-      text { font-family: ${config.fontId ? "SplitFont, Arial" : "Arial"}, sans-serif; }
+      text { font-family: "${escapeXml(fontName)}", Arial, sans-serif; }
       .region-rect { stroke-width: 1; }
       .region-text { font-size: 10px; }
     </style></defs>`;
@@ -794,17 +874,19 @@ export default function SplitWorkspace() {
           // (same as the web preview). We never re-wrap here, so the SVG line
           // breaks match the on-screen result 1:1.
           if (r.text) {
-            const textX = sideX + mmToPx(r.x + sidePadding.left);
-            const textY = sideY + mmToPx(r.y + sidePadding.top);
-            const textHeightMm = r.heightMm - sidePadding.top - sidePadding.bottom;
-            const fontSizePx = Math.max(8, mmToPx(ptToMm(config.fontSizePt)));
-            const lineHeight = fontSizePx * 1.25;
-            const maxLines = Math.max(1, Math.floor(mmToPx(textHeightMm) / lineHeight));
-
-            const visibleLines = r.text.split("\n").slice(0, maxLines);
-            visibleLines.forEach((line, lineIdx) => {
-              svgContent += `<text x="${textX}" y="${textY + fontSizePx + lineHeight * lineIdx}" font-size="${fontSizePx}" fill="#333">${escapeXml(line)}</text>`;
+            const layout = getRegionTextLayout(r, sidePadding, scale, bodyFontSizePx);
+            const clipId = `clip-${idx}-${side}-${r.regionId}`;
+            svgContent += `<clipPath id="${clipId}"><rect x="${sideX + layout.clipX}" y="${sideY + layout.clipY}" width="${layout.clipWidth}" height="${layout.clipHeight}"/></clipPath>`;
+            svgContent += `<g clip-path="url(#${clipId})">`;
+            layout.visibleLines.forEach((line, lineIdx) => {
+              const lineY =
+                layout.textY + (lineIdx + 1) * layout.lineHeight - layout.fontSizeUnits * 0.2;
+              svgContent += `<text x="${sideX + layout.textX}" y="${sideY + lineY}" font-size="${layout.fontSizeUnits}" fill="${getConnectionTextFill(line)}">${escapeXml(line)}</text>`;
             });
+            if (layout.showOverflow && layout.clipWidth > 0 && layout.clipHeight > 0) {
+              svgContent += `<text x="${sideX + layout.overflowX}" y="${sideY + layout.overflowY}" text-anchor="end" font-size="${layout.overflowFontSizeUnits}" fill="#EF4444">+</text>`;
+            }
+            svgContent += `</g>`;
           }
         });
       });
@@ -937,7 +1019,7 @@ export default function SplitWorkspace() {
   const buildIllustratorSvg = (): { svg: string; widthMm: number; heightMm: number } => {
     if (!simulation) return { svg: "", widthMm: 0, heightMm: 0 };
 
-    const fontName = fonts.find((f) => String(f.id) === config.fontId)?.font_name || "sans-serif";
+    const fontName = getSimulationFontName();
     const isSideBySide = simViewMode === "side-by-side";
     const sideGapMm = 6;
     const labelGapMm = 10;
@@ -1017,13 +1099,15 @@ export default function SplitWorkspace() {
             const textY = ry + sidePadding.top * pxPerMm;
             const fontSizePt = bodyFontSizePt;
             const lineHeight = fontSizePt * 1.25;
-            const maxLines = Math.max(1, Math.floor((rh - (sidePadding.top + sidePadding.bottom) * pxPerMm) / lineHeight));
+            const maxLines = Math.max(
+              1,
+              Math.floor((rh - (sidePadding.top + sidePadding.bottom) * pxPerMm) / lineHeight)
+            );
 
             const lines = r.text.split("\n");
             const visibleLines = lines.slice(0, maxLines);
             visibleLines.forEach((line, lineIdx) => {
-              const hasConn = config.connectionText && line.includes(config.connectionText);
-              const fill = hasConn ? "#059669" : "#333333";
+              const fill = getConnectionTextFill(line);
               const lineY = textY + (lineIdx + 1) * lineHeight - fontSizePt * 0.2;
               svgContent += `  <text x="${textX}" y="${lineY}" font-family="${fontFamilyAttr}" font-size="${fontSizePt}" fill="${fill}">${escapeXml(line)}</text>\n`;
             });
@@ -1103,26 +1187,43 @@ export default function SplitWorkspace() {
       // Embed the selected font so text stays editable AND renders as 微软雅黑
       // (not a fallback) in Illustrator. Falls back to Helvetica if none.
       let bodyFontName = "helvetica";
+      type EmbedState = { status: "no-font" } | { status: "embedded"; fontName: string } | { status: "embed-failed"; fontName: string; error: string };
+      let embedState: EmbedState = { status: "no-font" };
+
       const selectedFont = fonts.find((f) => String(f.id) === config.fontId);
       if (selectedFont?.id) {
         try {
           const fontRes = await fetch(`/api/fonts/file/${selectedFont.id}`);
-          if (fontRes.ok) {
-            const buf = await fontRes.arrayBuffer();
-            const bytes = new Uint8Array(buf);
-            let binary = "";
-            const chunk = 0x8000;
-            for (let i = 0; i < bytes.length; i += chunk) {
-              binary += String.fromCharCode(...bytes.subarray(i, i + chunk));
-            }
-            const base64 = btoa(binary);
-            const vfsName = "SplitFont.ttf";
-            doc.addFileToVFS(vfsName, base64);
-            doc.addFont(vfsName, "SplitFont", "normal");
-            bodyFontName = "SplitFont";
+          if (!fontRes.ok) {
+            throw new Error(`HTTP ${fontRes.status}`);
           }
+          const buf = await fontRes.arrayBuffer();
+          const bytes = new Uint8Array(buf);
+
+          // Safe chunked base64 conversion for large fonts (e.g. 15 MB 微软雅黑).
+          // Build an array of chunk strings, then join once to avoid O(n²) concat.
+          const chunkSize = 0x2000; // 8KB chunks to stay well under stack limits
+          const chunks: string[] = [];
+          for (let i = 0; i < bytes.length; i += chunkSize) {
+            const end = Math.min(i + chunkSize, bytes.length);
+            let chunkStr = "";
+            for (let j = i; j < end; j++) {
+              chunkStr += String.fromCharCode(bytes[j]);
+            }
+            chunks.push(chunkStr);
+          }
+          const binary = chunks.join("");
+          const base64 = btoa(binary);
+
+          const vfsName = "SplitFont.ttf";
+          doc.addFileToVFS(vfsName, base64);
+          doc.addFont(vfsName, "SplitFont", "normal");
+          bodyFontName = "SplitFont";
+          embedState = { status: "embedded", fontName: selectedFont.font_name };
         } catch (err) {
-          console.warn("Font embed failed, using Helvetica:", err);
+          const errMsg = err instanceof Error ? err.message : String(err);
+          embedState = { status: "embed-failed", fontName: selectedFont.font_name, error: errMsg };
+          console.warn(`Font embed failed for ${selectedFont.font_name}, using Helvetica:`, err);
         }
       }
 
@@ -1186,19 +1287,20 @@ export default function SplitWorkspace() {
             drawText(r.regionId, rx + rw - 5, ry + 12, 10, stroke, "right");
 
             if (r.text) {
-              // Reuse the EXACT lines the simulation already wrapped (same as the
-              // web preview). No re-wrapping, so line breaks match 1:1.
               const textX = rx + sidePadding.left * pxPerMm;
               const textY = ry + sidePadding.top * pxPerMm;
               const fontSizePt = bodyFontSizePt;
               const lineHeight = fontSizePt * 1.25;
-              const maxLines = Math.max(1, Math.floor((rh - (sidePadding.top + sidePadding.bottom) * pxPerMm) / lineHeight));
+              const maxLines = Math.max(
+                1,
+                Math.floor((rh - (sidePadding.top + sidePadding.bottom) * pxPerMm) / lineHeight)
+              );
 
               const lines = r.text.split("\n");
               const visibleLines = lines.slice(0, maxLines);
               visibleLines.forEach((line, lineIdx) => {
-                const hasConn = config.connectionText && line.includes(config.connectionText);
-                const fill: [number, number, number] = hasConn ? [5, 150, 98] : [51, 51, 51];
+                const fill: [number, number, number] =
+                  getConnectionTextFill(line) === "#059669" ? [5, 150, 98] : [51, 51, 51];
                 const lineY = textY + (lineIdx + 1) * lineHeight - fontSizePt * 0.2;
                 drawText(line, textX, lineY, fontSizePt, fill);
               });
@@ -1213,11 +1315,15 @@ export default function SplitWorkspace() {
 
       const pdfBlob = doc.output("blob");
       downloadBlob(pdfBlob, `${config.name || "simulation"}.ai`);
-      setMessage(
-        bodyFontName === "SplitFont"
-          ? "Illustrator file (.ai) exported with embedded font"
-          : "Illustrator file (.ai) exported (no font selected — using Helvetica)"
-      );
+
+      // Report the actual embed outcome to the user
+      if (embedState.status === "embedded") {
+        setMessage(`Illustrator file (.ai) exported with embedded font (${embedState.fontName})`);
+      } else if (embedState.status === "embed-failed") {
+        setMessage(`Illustrator file (.ai) exported, but embedding ${embedState.fontName} failed (${embedState.error}) — using Helvetica`);
+      } else {
+        setMessage("Illustrator file (.ai) exported (no font selected — using Helvetica)");
+      }
     } catch (err) {
       console.error(err);
       setMessage("Export failed: " + (err as Error).message);
@@ -2155,6 +2261,16 @@ export default function SplitWorkspace() {
                                   {displayLabel}
                                 </div>
                                 <svg width={mmToPx(widthMm)} height={mmToPx(heightMm)} className="bg-white border border-[var(--border)] shadow-sm">
+                                  <rect
+                                    x={mmToPx(sidePadding.left)}
+                                    y={mmToPx(sidePadding.top)}
+                                    width={Math.max(0, mmToPx(widthMm - sidePadding.left - sidePadding.right))}
+                                    height={Math.max(0, mmToPx(heightMm - sidePadding.top - sidePadding.bottom))}
+                                    fill="none"
+                                    stroke="#059669"
+                                    strokeWidth={1}
+                                    strokeDasharray="4,4"
+                                  />
                                   {label[side].map((r) => (
                                     <g key={r.regionId}>
                                       <rect
@@ -2165,26 +2281,72 @@ export default function SplitWorkspace() {
                                         fill={r.type === "fixed" ? "rgba(37,99,235,0.08)" : "rgba(5,150,98,0.08)"}
                                         stroke={r.type === "fixed" ? "#2563EB" : "#059669"}
                                       />
-                                      <foreignObject
-                                        x={mmToPx(r.x + sidePadding.left)}
-                                        y={mmToPx(r.y + sidePadding.top)}
-                                        width={mmToPx(r.widthMm - sidePadding.left - sidePadding.right)}
-                                        height={mmToPx(r.heightMm - sidePadding.top - sidePadding.bottom)}
-                                      >
-                                        <div
-                                          className="leading-tight overflow-hidden"
-                                          style={{
-                                            fontFamily: config.fontId
-                                              ? `'${fonts.find((f) => String(f.id) === config.fontId)?.font_name || "sans-serif"}', sans-serif`
-                                              : "sans-serif",
-                                            fontSize: Math.max(8, mmToPx(ptToMm(config.fontSizePt))),
-                                          }}
-                                        >
-                                          {r.text.split("\n").map((line, i) => (
-                                            <div key={i}>{line}</div>
-                                          ))}
-                                        </div>
-                                      </foreignObject>
+                                      {(() => {
+                                        const layout = getRegionTextLayout(
+                                          r,
+                                          sidePadding,
+                                          scale,
+                                          Math.max(8, mmToPx(ptToMm(Math.max(4, config.fontSizePt))))
+                                        );
+                                        const fontFamily = getSimulationFontName();
+                                        const fontSizePt = Math.max(4, config.fontSizePt);
+                                        const lineHeight = 1.25 * 1.02;
+
+                                        return (
+                                          <>
+                                            <foreignObject
+                                              x={layout.clipX}
+                                              y={layout.clipY}
+                                              width={layout.clipWidth}
+                                              height={layout.clipHeight}
+                                            >
+                                              <div
+                                                style={{
+                                                  width: `${layout.clipWidth}px`,
+                                                  height: `${layout.clipHeight}px`,
+                                                  overflow: "hidden",
+                                                  whiteSpace: "pre-wrap",
+                                                  overflowWrap: config.allowSplitText ? "anywhere" : "normal",
+                                                  wordBreak: config.allowSplitText ? "break-word" : "normal",
+                                                  fontFamily,
+                                                  fontSize: `${fontSizePt}pt`,
+                                                  lineHeight: String(lineHeight),
+                                                  color: "#333333",
+                                                }}
+                                              >
+                                                {r.text}
+                                              </div>
+                                            </foreignObject>
+                                            {config.connectionText &&
+                                              r.text.includes(config.connectionText) && (
+                                                <text
+                                                  x={layout.textX}
+                                                  y={layout.textY + layout.fontSizeUnits}
+                                                  fontFamily={fontFamily}
+                                                  fontSize={layout.fontSizeUnits}
+                                                  fill="#059669"
+                                                  opacity={0}
+                                                >
+                                                  {config.connectionText}
+                                                </text>
+                                              )}
+                                            {layout.showOverflow &&
+                                              layout.clipWidth > 0 &&
+                                              layout.clipHeight > 0 && (
+                                                <text
+                                                  x={layout.overflowX}
+                                                  y={layout.overflowY}
+                                                  textAnchor="end"
+                                                  fontFamily={fontFamily}
+                                                  fontSize={layout.overflowFontSizeUnits}
+                                                  fill="#EF4444"
+                                                >
+                                                  +
+                                                </text>
+                                              )}
+                                          </>
+                                        );
+                                      })()}
                                       <text
                                         x={mmToPx(r.x + r.widthMm - 2)}
                                         y={mmToPx(r.y + 8)}
