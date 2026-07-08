@@ -1423,8 +1423,14 @@ export default function SplitWorkspace() {
           id: String(s.id),
           type: String(s.sourceType) as SplitContentSource["type"],
           label: String(s.label),
-          translationId: s.translationId ? Number(s.translationId) : undefined,
-          manualText: s.manualText ? String(s.manualText) : undefined,
+          translationId:
+            s.translationId !== undefined && s.translationId !== null
+              ? Number(s.translationId)
+              : undefined,
+          manualText:
+            s.manualText !== undefined && s.manualText !== null
+              ? String(s.manualText)
+              : undefined,
         })),
       });
       setSimulation(null);

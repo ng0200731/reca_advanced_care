@@ -59,10 +59,15 @@ export async function POST(request: Request) {
           create: contentSources.map((s: Record<string, unknown>) => {
             const rawType = String(s.sourceType ?? s.type ?? "translation");
             return {
+              id: s.id ? String(s.id) : undefined,
               sourceType: rawType === "manual" ? "manual" : "translation",
               label: String(s.label),
-              translationId: typeof s.translationId === "number" ? s.translationId : null,
-              manualText: s.manualText ? String(s.manualText) : null,
+              translationId:
+                typeof s.translationId === "number" ? s.translationId : null,
+              manualText:
+                s.manualText !== undefined && s.manualText !== null
+                  ? String(s.manualText)
+                  : null,
             };
           }),
         },
