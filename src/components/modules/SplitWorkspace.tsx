@@ -3,6 +3,7 @@
 import React, { useEffect, useState, useRef, useCallback, useMemo } from "react";
 import type { SplitConfiguration, SplitRegion, SplitContentSource } from "@/lib/types";
 import { simulateOverflow, applyFixedContentOption } from "@/lib/splitSimulation";
+import { getPreviewCanvasFontPt } from "@/lib/splitTextSizing";
 import type { SimulatedRegion } from "@/lib/splitSimulation";
 import { getTextLineHeight, getTextLines } from "@/lib/textLayout";
 import { jsPDF } from "jspdf";
@@ -58,7 +59,6 @@ type DragState =
 
 const MAX_REGIONS = 10;
 const SNAP_THRESHOLD_PX = 8;
-const CSS_PX_PER_MM = 96 / 25.4;
 
 function generateId(): string {
   return Math.random().toString(36).slice(2, 10);
@@ -105,6 +105,7 @@ export default function SplitWorkspace() {
   const [showSimulationModal, setShowSimulationModal] = useState(false);
   const [showExportMenu, setShowExportMenu] = useState(false);
   const [exporting, setExporting] = useState(false);
+  const [loadingSplitId, setLoadingSplitId] = useState<string | null>(null);
   const [showContextPopup, setShowContextPopup] = useState(false);
   const [expandedSections, setExpandedSections] = useState<Record<string, boolean>>({});
   const [simViewMode, setSimViewMode] = useState<"side-by-side" | "top-bottom">("side-by-side");
@@ -277,7 +278,7 @@ export default function SplitWorkspace() {
   const mmToPx = (mm: number) => mm * scale;
   const pxToMm = (px: number) => px / scale;
   const ptToMm = (pt: number) => (pt * 25.4) / 72;
-  const getPreviewEquivalentPt = (fontSizePt: number) => fontSizePt * (CSS_PX_PER_MM / scale);
+  const getPreviewFontPt = (fontSizePt: number) => getPreviewCanvasFontPt(fontSizePt, scale);
 
   const getMouseMm = (e: React.MouseEvent | MouseEvent): { x: number; y: number } => {
     const target = (e as React.MouseEvent).currentTarget;
@@ -834,6 +835,7 @@ export default function SplitWorkspace() {
     const labelInnerHeight = mmToPx(heightMm);
     const fontName = getSimulationFontName();
     const bodyFontSizePx = Math.max(8, mmToPx(ptToMm(Math.max(4, config.fontSizePt))));
+    const previewBodyFontSizePt = getPreviewFontPt(Math.max(4, config.fontSizePt));
 
     // Always render front and back horizontally within each label, regardless of
     // overall layout mode (side-by-side or top-bottom).
@@ -886,7 +888,7 @@ export default function SplitWorkspace() {
           if (r.text) {
             const layout = getRegionTextLayout(r, sidePadding, scale, bodyFontSizePx);
             svgContent += `<foreignObject x="${sideX + layout.clipX}" y="${sideY + layout.clipY}" width="${layout.clipWidth}" height="${layout.clipHeight}">`;
-            svgContent += `<div xmlns="http://www.w3.org/1999/xhtml" style="width:${layout.clipWidth}px;height:${layout.clipHeight}px;overflow:hidden;white-space:pre-wrap;overflow-wrap:${config.allowSplitText ? "anywhere" : "normal"};word-break:${config.allowSplitText ? "break-word" : "normal"};font-family:${escapeXml(fontName)}, Arial, sans-serif;font-size:${Math.max(4, config.fontSizePt)}pt;line-height:${1.25 * 1.02};color:#333333;">${escapeXml(r.text)}</div>`;
+            svgContent += `<div xmlns="http://www.w3.org/1999/xhtml" style="width:${layout.clipWidth}px;height:${layout.clipHeight}px;overflow:hidden;white-space:pre-wrap;overflow-wrap:${config.allowSplitText ? "anywhere" : "normal"};word-break:${config.allowSplitText ? "break-word" : "normal"};font-family:${escapeXml(fontName)}, Arial, sans-serif;font-size:${previewBodyFontSizePt}pt;line-height:${1.25 * 1.02};color:#333333;">${escapeXml(r.text)}</div>`;
             svgContent += `</foreignObject>`;
             if (layout.showOverflow && layout.clipWidth > 0 && layout.clipHeight > 0) {
               svgContent += `<text x="${sideX + layout.overflowX}" y="${sideY + layout.overflowY}" text-anchor="end" font-size="${layout.overflowFontSizeUnits}" fill="#EF4444">+</text>`;
@@ -1050,7 +1052,7 @@ export default function SplitWorkspace() {
       .replace(/"/g, "&quot;").replace(/'/g, "&apos;");
 
     const fontFamilyAttr = escapeXml(fontName);
-    const bodyFontSizePt = getPreviewEquivalentPt(Math.max(4, config.fontSizePt));
+    const bodyFontSizePt = Math.max(4, config.fontSizePt);
 
     let svgContent = `<?xml version="1.0" encoding="UTF-8"?>
 <svg xmlns="http://www.w3.org/2000/svg" width="${svgWidthMm}mm" height="${svgHeightMm}mm" viewBox="0 0 ${svgWidth} ${svgHeight}">
@@ -1257,7 +1259,7 @@ export default function SplitWorkspace() {
       doc.setFillColor(255, 255, 255);
       doc.rect(0, 0, pageW, pageH, "F");
 
-      const bodyFontSizePt = getPreviewEquivalentPt(Math.max(4, config.fontSizePt));
+      const bodyFontSizePt = Math.max(4, config.fontSizePt);
 
       simulation.labels.forEach((label, idx) => {
         const labelX = isSideBySide
@@ -1385,6 +1387,8 @@ export default function SplitWorkspace() {
   };
 
   const handleLoadSplit = async (id: string) => {
+    if (loadingSplitId) return;
+    setLoadingSplitId(id);
     try {
       const res = await fetch(`/api/splits/${id}`);
       if (!res.ok) throw new Error("Failed to load");
@@ -1428,6 +1432,8 @@ export default function SplitWorkspace() {
       setActiveTab("editor");
     } catch {
       setMessage("Failed to load split configuration");
+    } finally {
+      setLoadingSplitId(null);
     }
   };
 
@@ -1878,14 +1884,15 @@ export default function SplitWorkspace() {
               </div>
 
               {isDoubleSided ? (
-                <div className="space-y-2">
-                  <div className={`flex ${viewMode === "side-by-side" ? "flex-row" : "flex-col"} gap-4 px-2`}>
+                <div className="space-y-2 overflow-x-auto pb-3">
+                  <div className={`flex ${viewMode === "side-by-side" ? "flex-row w-max" : "flex-col"} gap-4 px-2`}>
                     {(["front", "back"] as const).map((side) => {
                       const sideImage = parseSideImage(config.imageData, side);
                       return (
                         <div
                           key={side}
-                          className={`flex-1 flex items-center justify-between ${activeSide === side ? "text-[var(--primary)]" : "text-[var(--foreground)]/80"}`}
+                          style={{ width: mmToPx(widthMm) }}
+                          className={`flex items-center justify-between ${activeSide === side ? "text-[var(--primary)]" : "text-[var(--foreground)]/80"}`}
                         >
                           <span className="text-sm font-medium capitalize">{side} Label</span>
                           {sideImage && (
@@ -1903,7 +1910,7 @@ export default function SplitWorkspace() {
                       );
                     })}
                   </div>
-                  <div ref={canvasWheelRef} className={`relative flex ${viewMode === "side-by-side" ? "flex-row" : "flex-col"} gap-4`}>
+                  <div ref={canvasWheelRef} className={`relative flex ${viewMode === "side-by-side" ? "flex-row w-max" : "flex-col"} gap-4`}>
                     {renderSvg("front")}
                     {renderSvg("back")}
                     {renderConnectionOverlay()}
@@ -2042,7 +2049,6 @@ export default function SplitWorkspace() {
                       <div
                         className="relative"
                         onMouseEnter={() => contextPreview !== null && setShowContextPopup(true)}
-                        onMouseLeave={() => setShowContextPopup(false)}
                       >
                         <div className="flex items-center gap-1">
                           <label className="text-xs text-[var(--foreground)]/60">Content source for {selectedRegion.regionId}</label>
@@ -2072,8 +2078,23 @@ export default function SplitWorkspace() {
                           ))}
                         </select>
                         {contextPreview !== null && showContextPopup && (
-                          <div className="absolute left-0 top-full mt-1 z-20 w-full max-h-40 overflow-auto bg-white border border-[var(--border)] rounded-lg shadow-[var(--shadow-lg)] p-2 text-xs text-[var(--foreground)] whitespace-pre-wrap break-words pointer-events-none">
-                            {contextPreview}
+                          <div className="absolute left-0 top-full mt-1 z-20 w-full bg-white border border-[var(--border)] rounded-lg shadow-[var(--shadow-lg)] p-2 text-xs text-[var(--foreground)]">
+                            <div className="flex items-center justify-between gap-2 border-b border-[var(--border)] pb-1">
+                              <span className="font-semibold truncate">
+                                {selectedSource?.label || "Content preview"}
+                              </span>
+                              <button
+                                type="button"
+                                onClick={() => setShowContextPopup(false)}
+                                className="shrink-0 w-5 h-5 flex items-center justify-center rounded-full text-[var(--foreground)]/60 hover:bg-[var(--muted)] hover:text-[var(--foreground)] cursor-pointer"
+                                aria-label="Close content preview"
+                              >
+                                x
+                              </button>
+                            </div>
+                            <div className="mt-2 max-h-48 overflow-auto whitespace-pre-wrap break-words select-text cursor-text">
+                              {contextPreview}
+                            </div>
                           </div>
                         )}
                       </div>
@@ -2304,6 +2325,7 @@ export default function SplitWorkspace() {
                                         );
                                         const fontFamily = getSimulationFontName();
                                         const fontSizePt = Math.max(4, config.fontSizePt);
+                                        const previewFontSizePt = getPreviewFontPt(fontSizePt);
                                         const lineHeight = 1.25 * 1.02;
 
                                         return (
@@ -2323,7 +2345,7 @@ export default function SplitWorkspace() {
                                                   overflowWrap: config.allowSplitText ? "anywhere" : "normal",
                                                   wordBreak: config.allowSplitText ? "break-word" : "normal",
                                                   fontFamily,
-                                                  fontSize: `${fontSizePt}pt`,
+                                                  fontSize: `${previewFontSizePt}pt`,
                                                   lineHeight: String(lineHeight),
                                                   color: "#333333",
                                                 }}
@@ -2496,6 +2518,7 @@ export default function SplitWorkspace() {
         <h2 className="text-xl font-semibold">Saved Split Configurations</h2>
         <button
           onClick={handleNewConfig}
+          disabled={!!loadingSplitId}
           className="px-4 py-2 bg-[var(--primary)] text-white rounded-lg text-sm font-semibold cursor-pointer"
         >
           New
@@ -2507,30 +2530,36 @@ export default function SplitWorkspace() {
         </div>
       ) : (
         <div className="space-y-3">
-          {savedSplits.map((s) => (
-            <div key={s.id} className="flex items-center justify-between p-4 bg-white border border-[var(--border)] rounded-xl">
-              <div>
-                <div className="font-medium text-sm">{s.name}</div>
-                <div className="text-xs text-[var(--foreground)]/50">
-                  Layout: {s.layout.name}
+          {savedSplits.map((s) => {
+            const isOpening = loadingSplitId === s.id;
+
+            return (
+              <div key={s.id} className="flex items-center justify-between p-4 bg-white border border-[var(--border)] rounded-xl">
+                <div>
+                  <div className="font-medium text-sm">{s.name}</div>
+                  <div className="text-xs text-[var(--foreground)]/50">
+                    Layout: {s.layout.name}
+                  </div>
+                </div>
+                <div className="flex gap-2">
+                  <button
+                    onClick={() => handleLoadSplit(s.id)}
+                    disabled={!!loadingSplitId}
+                    className="px-3 py-1.5 bg-[var(--primary)] text-white rounded-lg text-xs cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
+                  >
+                    {isOpening ? "Loading..." : "Open"}
+                  </button>
+                  <button
+                    onClick={() => handleDeleteSplit(s.id)}
+                    disabled={!!loadingSplitId}
+                    className="px-3 py-1.5 border border-red-200 text-[var(--destructive)] rounded-lg text-xs cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
+                  >
+                    Delete
+                  </button>
                 </div>
               </div>
-              <div className="flex gap-2">
-                <button
-                  onClick={() => handleLoadSplit(s.id)}
-                  className="px-3 py-1.5 bg-[var(--primary)] text-white rounded-lg text-xs cursor-pointer"
-                >
-                  Open
-                </button>
-                <button
-                  onClick={() => handleDeleteSplit(s.id)}
-                  className="px-3 py-1.5 border border-red-200 text-[var(--destructive)] rounded-lg text-xs cursor-pointer"
-                >
-                  Delete
-                </button>
-              </div>
-            </div>
-          ))}
+            );
+          })}
         </div>
       )}
     </div>
@@ -2541,6 +2570,14 @@ export default function SplitWorkspace() {
       {message && (
         <div className={`p-3 rounded-lg text-sm ${message.includes("success") ? "bg-green-50 text-green-700 border border-green-200" : "bg-red-50 text-[var(--destructive)] border border-red-200"}`}>
           {message}
+        </div>
+      )}
+
+      {loadingSplitId && (
+        <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/50 p-4">
+          <div className="rounded-xl bg-white px-6 py-4 text-sm font-semibold text-[var(--foreground)] shadow-[var(--shadow-xl)]">
+            Loading...
+          </div>
         </div>
       )}
 

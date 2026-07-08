@@ -1,4 +1,5 @@
 import { fitTextToBox } from "./textLayout";
+import { getPreviewCanvasFontPt } from "./splitTextSizing";
 import type { SplitConfiguration, SplitRegion, SplitContentSource } from "./types";
 
 type RegionPadding = {
@@ -284,6 +285,7 @@ export function simulateOverflow(
   renderUnitsPerMm = 96 / 25.4
 ): SimulationResult {
   const fontSizePt = config.fontSizePt || 8;
+  const previewFontSizePt = getPreviewCanvasFontPt(fontSizePt, renderUnitsPerMm);
 
   const labels: SimulatedLabel[] = [];
   const remainingByRegion: Record<string, string> = {};
@@ -414,7 +416,7 @@ export function simulateOverflow(
           unit: "px",
           fontSizeUnit: "pt",
           fontFamily,
-          fontSize: fontSizePt,
+          fontSize: previewFontSizePt,
           allowSplit: config.allowSplitText,
           connectionText: config.connectionText ?? "",
           safeWidthMargin: TEXT_SAFE_MARGIN_MM * renderUnitsPerMm,
