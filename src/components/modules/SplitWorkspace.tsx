@@ -169,7 +169,7 @@ export default function SplitWorkspace() {
     return padding;
   };
 
-  const getFoldGuide = (side: "front" | "back") => {
+  const getFoldGuidePosition = (side: "front" | "back") => {
     const details = selectedLayout?.details;
     if (!details || details.cuttingType !== "loop" || !details.loopFoldOrientation) {
       return null;
@@ -185,20 +185,53 @@ export default function SplitWorkspace() {
       ? (isVertical ? widthMm : heightMm) - baseDistance
       : baseDistance;
 
-    if (isVertical) {
+    return {
+      orientation: details.loopFoldOrientation,
+      distanceMm: distance,
+    } as const;
+  };
+
+  const getFoldGuide = (side: "front" | "back") => {
+    const fold = getFoldGuidePosition(side);
+    if (!fold) {
+      return null;
+    }
+
+    if (fold.orientation === "vertical") {
+      const foldX = mmToPx(fold.distanceMm);
       return {
-        x1: mmToPx(distance),
+        x1: foldX,
         y1: 0,
-        x2: mmToPx(distance),
+        x2: foldX,
         y2: mmToPx(heightMm),
       };
     }
 
+    const foldY = mmToPx(fold.distanceMm);
     return {
       x1: 0,
-      y1: mmToPx(distance),
+      y1: foldY,
       x2: mmToPx(widthMm),
-      y2: mmToPx(distance),
+      y2: foldY,
+    };
+  };
+
+  const getFoldSnapTargets = (side: "front" | "back") => {
+    const fold = getFoldGuidePosition(side);
+    if (!fold) {
+      return null;
+    }
+
+    if (fold.orientation === "vertical") {
+      return {
+        x: fold.distanceMm,
+        y: null,
+      };
+    }
+
+    return {
+      x: null,
+      y: fold.distanceMm,
     };
   };
 
@@ -553,6 +586,13 @@ export default function SplitWorkspace() {
       let ny = y - drag.offsetY;
       const snapTargetsX = [0, widthMm - region.widthMm, widthMm];
       const snapTargetsY = [0, heightMm - region.heightMm, heightMm];
+      const foldTargets = getFoldSnapTargets(region.side);
+      if (foldTargets?.x !== null && foldTargets?.x !== undefined) {
+        snapTargetsX.push(foldTargets.x, foldTargets.x - region.widthMm);
+      }
+      if (foldTargets?.y !== null && foldTargets?.y !== undefined) {
+        snapTargetsY.push(foldTargets.y, foldTargets.y - region.heightMm);
+      }
       const otherRects = config.regions.filter((r) => r.id !== region.id);
       for (const r of otherRects) {
         snapTargetsX.push(r.x, r.x + r.widthMm, r.x - region.widthMm, r.x + r.widthMm - region.widthMm);
@@ -592,6 +632,13 @@ export default function SplitWorkspace() {
 
       const snapTargetsX = [0, widthMm];
       const snapTargetsY = [0, heightMm];
+      const foldTargets = getFoldSnapTargets(region.side);
+      if (foldTargets?.x !== null && foldTargets?.x !== undefined) {
+        snapTargetsX.push(foldTargets.x);
+      }
+      if (foldTargets?.y !== null && foldTargets?.y !== undefined) {
+        snapTargetsY.push(foldTargets.y);
+      }
       for (const r of config.regions.filter((r) => r.id !== region.id)) {
         snapTargetsX.push(r.x, r.x + r.widthMm);
         snapTargetsY.push(r.y, r.y + r.heightMm);
@@ -1582,19 +1629,6 @@ export default function SplitWorkspace() {
               />
             )}
 
-            {foldGuide && (
-              <line
-                x1={foldGuide.x1}
-                y1={foldGuide.y1}
-                x2={foldGuide.x2}
-                y2={foldGuide.y2}
-                stroke="#DC2626"
-                strokeWidth={1.5}
-                strokeDasharray="4,4"
-                pointerEvents="none"
-              />
-            )}
-
             {/* Padding outline */}
             <rect
               x={mmToPx(sidePadding.left)}
@@ -1739,6 +1773,19 @@ export default function SplitWorkspace() {
                 </g>
               ))}
 
+            {foldGuide && (
+              <line
+                x1={foldGuide.x1}
+                y1={foldGuide.y1}
+                x2={foldGuide.x2}
+                y2={foldGuide.y2}
+                stroke="#DC2626"
+                strokeWidth={1.5}
+                strokeDasharray="4,4"
+                pointerEvents="none"
+              />
+            )}
+
             {/* Drawing preview */}
             {drag?.type === "draw" && drag.side === side && (
               <>
@@ -1802,13 +1849,17 @@ export default function SplitWorkspace() {
       const svgW = mmToPx(widthMm);
       const svgH = mmToPx(heightMm);
       const gap = 16;
+      const overflowBottom = 28;
+      const overflowTop = 8;
       const isTopBottom = viewMode === "top-bottom";
       const overlayW = isTopBottom ? svgW : 2 * svgW + gap;
-      const overlayH = isTopBottom ? 2 * svgH + gap : svgH;
+      const overlayH = (isTopBottom ? 2 * svgH + gap : svgH) + overflowTop + overflowBottom;
 
       const sideOrigin = (side: "front" | "back") => {
-        if (side === "front") return { x: 0, y: 0 };
-        return isTopBottom ? { x: 0, y: svgH + gap } : { x: svgW + gap, y: 0 };
+        if (side === "front") return { x: 0, y: overflowTop };
+        return isTopBottom
+          ? { x: 0, y: overflowTop + svgH + gap }
+          : { x: svgW + gap, y: overflowTop };
       };
 
       const getOverlayBezierPath = (sx: number, sy: number, tx: number, ty: number) => {
@@ -1818,7 +1869,11 @@ export default function SplitWorkspace() {
       };
 
       return (
-        <svg className="absolute top-0 left-0 pointer-events-none overflow-visible" width={overlayW} height={overlayH}>
+        <svg
+          className="absolute top-0 left-0 pointer-events-none overflow-visible"
+          width={overlayW}
+          height={overlayH}
+        >
           <defs>
             <marker id="arrowhead" markerWidth="10" markerHeight="7" refX="9" refY="3.5" orient="auto">
               <polygon points="0 0, 10 3.5, 0 7" fill="#6366f1" opacity="0.8" />
@@ -1966,7 +2021,7 @@ export default function SplitWorkspace() {
               </div>
 
               {isDoubleSided ? (
-                <div className="space-y-2 overflow-x-auto pb-3">
+                <div className="space-y-2 overflow-x-auto overflow-y-visible pb-10">
                   <div className={`flex ${viewMode === "side-by-side" ? "flex-row w-max" : "flex-col"} gap-4 px-2`}>
                     {(["front", "back"] as const).map((side) => {
                       const sideImage = parseSideImage(config.imageData, side);
@@ -1992,7 +2047,10 @@ export default function SplitWorkspace() {
                       );
                     })}
                   </div>
-                  <div ref={canvasWheelRef} className={`relative flex ${viewMode === "side-by-side" ? "flex-row w-max" : "flex-col"} gap-4`}>
+                  <div
+                    ref={canvasWheelRef}
+                    className={`relative flex ${viewMode === "side-by-side" ? "flex-row w-max" : "flex-col"} gap-4 pb-8`}
+                  >
                     {renderSvg("front")}
                     {renderSvg("back")}
                     {renderConnectionOverlay()}
