@@ -442,9 +442,34 @@ export default function SplitWorkspace() {
     return best;
   };
 
+  const getNearestFoldGuide = (x: number, y: number, side: "front" | "back"): { x: number; y: number } | null => {
+    const thresholdMm = 5 / scale;
+    const foldGuide = getFoldGuide(side);
+    const pr = getPaddingRect(side);
+
+    if (!foldGuide) {
+      return null;
+    }
+
+    const isVertical = Math.abs(foldGuide.x1 - foldGuide.x2) < 0.001;
+    if (isVertical) {
+      const foldX = pxToMm(foldGuide.x1);
+      const clampedY = Math.max(pr.y, Math.min(y, pr.y + pr.h));
+      const dist = Math.abs(x - foldX);
+      return dist <= thresholdMm ? { x: foldX, y: clampedY } : null;
+    }
+
+    const foldY = pxToMm(foldGuide.y1);
+    const clampedX = Math.max(pr.x, Math.min(x, pr.x + pr.w));
+    const dist = Math.abs(y - foldY);
+    return dist <= thresholdMm ? { x: clampedX, y: foldY } : null;
+  };
+
   const snapToPadding = (x: number, y: number, side: "front" | "back"): DrawSnap => {
     const corner = getNearestPaddingCorner(x, y, side);
     if (corner) return { ...corner, kind: "corner" };
+    const foldGuide = getNearestFoldGuide(x, y, side);
+    if (foldGuide) return { ...foldGuide, kind: "edge" };
     const edge = getNearestPaddingEdge(x, y, side);
     if (edge) return { ...edge, kind: "edge" };
     return { x, y, kind: null };
