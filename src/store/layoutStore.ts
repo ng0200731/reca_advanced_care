@@ -23,6 +23,7 @@ type LayoutStore = {
   materials: Material[];
   data: LayoutData;
   isDirty: boolean;
+  previewZoom: number;
   savedLayouts: { id: string; name: string }[];
   viewPanel: ViewPanel;
   menuExpanded: Record<string, boolean>;
@@ -32,6 +33,7 @@ type LayoutStore = {
   setViewPanel: (panel: ViewPanel) => void;
   setMenuExpanded: (key: string, expanded: boolean) => void;
   setSavedLayouts: (list: { id: string; name: string }[]) => void;
+  setPreviewZoom: (zoom: number) => void;
 
   setMaterialId: (id: string) => void;
   setSideType: (t: SideType) => void;
@@ -72,6 +74,7 @@ export const useLayoutStore = create<LayoutStore>((set) => ({
   materials: [],
   data: { ...initialData },
   isDirty: false,
+  previewZoom: 1,
   savedLayouts: [],
   viewPanel: "layout-create",
   menuExpanded: {},
@@ -82,6 +85,7 @@ export const useLayoutStore = create<LayoutStore>((set) => ({
   setMenuExpanded: (key, expanded) =>
     set((s) => ({ menuExpanded: { ...s.menuExpanded, [key]: expanded } })),
   setSavedLayouts: (savedLayouts) => set({ savedLayouts }),
+  setPreviewZoom: (previewZoom) => set({ previewZoom }),
 
   setMaterialId: (materialId) =>
     set((s) => ({ data: { ...s.data, materialId }, isDirty: true })),
@@ -139,7 +143,7 @@ export const useLayoutStore = create<LayoutStore>((set) => ({
     set((s) => ({ data: { ...s.data, isBackFlipped }, isDirty: true })),
   setLayoutName: (name) =>
     set((s) => ({ data: { ...s.data, name }, isDirty: true })),
-  loadLayout: (data) => set({ data, isDirty: false }),
-  reset: () => set({ data: { ...initialData }, step: "material", isDirty: false }),
+  loadLayout: (data) => set({ data, isDirty: false, previewZoom: 1 }),
+  reset: () => set({ data: { ...initialData }, step: "material", isDirty: false, previewZoom: 1 }),
   markClean: () => set({ isDirty: false }),
 }));

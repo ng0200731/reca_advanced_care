@@ -6,8 +6,10 @@ import LabelCanvas from "../canvas/LabelCanvas";
 
 export default function SizeOrientation() {
   const data = useLayoutStore((s) => s.data);
+  const previewZoom = useLayoutStore((s) => s.previewZoom);
   const setSize = useLayoutStore((s) => s.setSize);
   const setOrientation = useLayoutStore((s) => s.setOrientation);
+  const setPreviewZoom = useLayoutStore((s) => s.setPreviewZoom);
   const setStep = useLayoutStore((s) => s.setStep);
 
   const hasValidSize = data.widthMm > 0 && data.heightMm > 0;
@@ -91,6 +93,8 @@ export default function SizeOrientation() {
               heightMm={data.heightMm}
               orientation={data.orientation}
               maxDisplayPx={300}
+              zoom={previewZoom}
+              onZoomChange={setPreviewZoom}
               showDimensions
             />
           ) : (

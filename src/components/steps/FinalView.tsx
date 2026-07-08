@@ -6,8 +6,10 @@ import LabelCanvas from "../canvas/LabelCanvas";
 
 export default function FinalView() {
   const data = useLayoutStore((s) => s.data);
+  const previewZoom = useLayoutStore((s) => s.previewZoom);
   const setViewMode = useLayoutStore((s) => s.setViewMode);
   const setIsBackFlipped = useLayoutStore((s) => s.setIsBackFlipped);
+  const setPreviewZoom = useLayoutStore((s) => s.setPreviewZoom);
   const setStep = useLayoutStore((s) => s.setStep);
 
   const isLoop = data.cuttingType === "loop";
@@ -65,6 +67,8 @@ export default function FinalView() {
             heightMm={data.heightMm}
             orientation={data.orientation}
             maxDisplayPx={isLoop ? 220 : 300}
+            zoom={previewZoom}
+            onZoomChange={setPreviewZoom}
             foldOrientation={data.loopFoldOrientation}
             foldDistanceMm={data.loopFoldDistanceMm}
             foldMidForm={data.loopMidForm}
@@ -83,6 +87,8 @@ export default function FinalView() {
             heightMm={data.heightMm}
             orientation={data.orientation}
             maxDisplayPx={isLoop ? 220 : 300}
+            zoom={previewZoom}
+            onZoomChange={setPreviewZoom}
             foldOrientation={data.loopFoldOrientation}
             foldDistanceMm={data.loopFoldDistanceMm}
             foldMidForm={data.loopMidForm}
