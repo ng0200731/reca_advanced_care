@@ -15,6 +15,10 @@ type SavedLayout = {
     widthMm: number;
     heightMm: number;
     orientation: string;
+    cuttingType?: string;
+    loopFoldOrientation?: "vertical" | "horizontal";
+    loopMidForm?: boolean;
+    loopFoldDistanceMm?: number;
     paddingTop: number;
     paddingRight: number;
     paddingBottom: number;
@@ -163,6 +167,39 @@ export default function SplitWorkspace() {
       };
     }
     return padding;
+  };
+
+  const getFoldGuide = (side: "front" | "back") => {
+    const details = selectedLayout?.details;
+    if (!details || details.cuttingType !== "loop" || !details.loopFoldOrientation) {
+      return null;
+    }
+
+    const isVertical = details.loopFoldOrientation === "vertical";
+    const baseDistance = details.loopMidForm
+      ? (isVertical ? widthMm : heightMm) / 2
+      : details.loopFoldDistanceMm ?? (isVertical ? widthMm : heightMm) / 2;
+
+    const isBackFlipped = side === "back" && !!details.isBackFlipped;
+    const distance = isBackFlipped
+      ? (isVertical ? widthMm : heightMm) - baseDistance
+      : baseDistance;
+
+    if (isVertical) {
+      return {
+        x1: mmToPx(distance),
+        y1: 0,
+        x2: mmToPx(distance),
+        y2: mmToPx(heightMm),
+      };
+    }
+
+    return {
+      x1: 0,
+      y1: mmToPx(distance),
+      x2: mmToPx(widthMm),
+      y2: mmToPx(distance),
+    };
   };
 
   const fetchData = useCallback(async () => {
@@ -1494,6 +1531,7 @@ export default function SplitWorkspace() {
     const renderSvg = (side: "front" | "back", showLines = false) => {
       const sidePadding = getPadding(side);
       const sideImage = parseSideImage(config.imageData, side);
+      const foldGuide = getFoldGuide(side);
       return (
         <svg
           key={side}
@@ -1516,6 +1554,19 @@ export default function SplitWorkspace() {
                 height={mmToPx(heightMm)}
                 opacity={config.imageOpacity}
                 preserveAspectRatio="none"
+              />
+            )}
+
+            {foldGuide && (
+              <line
+                x1={foldGuide.x1}
+                y1={foldGuide.y1}
+                x2={foldGuide.x2}
+                y2={foldGuide.y2}
+                stroke="#DC2626"
+                strokeWidth={1.5}
+                strokeDasharray="4,4"
+                pointerEvents="none"
               />
             )}
 
@@ -2302,6 +2353,22 @@ export default function SplitWorkspace() {
                                   {displayLabel}
                                 </div>
                                 <svg width={mmToPx(widthMm)} height={mmToPx(heightMm)} className="bg-white border border-[var(--border)] shadow-sm">
+                                  {(() => {
+                                    const foldGuide = getFoldGuide(side);
+                                    if (!foldGuide) return null;
+                                    return (
+                                      <line
+                                        x1={foldGuide.x1}
+                                        y1={foldGuide.y1}
+                                        x2={foldGuide.x2}
+                                        y2={foldGuide.y2}
+                                        stroke="#DC2626"
+                                        strokeWidth={1.5}
+                                        strokeDasharray="4,4"
+                                        pointerEvents="none"
+                                      />
+                                    );
+                                  })()}
                                   <rect
                                     x={mmToPx(sidePadding.left)}
                                     y={mmToPx(sidePadding.top)}
