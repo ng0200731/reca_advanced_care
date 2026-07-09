@@ -54,6 +54,8 @@ type TranslationTable = {
 };
 
 type DrawSnap = { x: number; y: number; kind: "corner" | "edge" | null };
+type PaddingBox = { top: number; right: number; bottom: number; left: number };
+type PaddingGuideRect = { x: number; y: number; w: number; h: number };
 
 type DragState =
   | { type: "draw"; side: "front" | "back"; startX: number; startY: number; currentX: number; currentY: number; startSnap: DrawSnap; endSnap: DrawSnap }
@@ -155,7 +157,7 @@ export default function SplitWorkspace() {
     };
   }, [selectedLayout]);
 
-  const getPadding = (side: "front" | "back") => {
+  const getPadding = (side: "front" | "back"): PaddingBox => {
     if (!selectedLayout?.details) return padding;
     const d = selectedLayout.details;
     if (side === "back" && d.paddingR2Top !== undefined) {
@@ -169,24 +171,48 @@ export default function SplitWorkspace() {
     return padding;
   };
 
-  const getFoldGuidePosition = (side: "front" | "back") => {
+  const getFoldRegion2Padding = (): PaddingBox => {
+    const d = selectedLayout?.details;
+    return {
+      top: d?.paddingR2Top ?? 0,
+      right: d?.paddingR2Right ?? 0,
+      bottom: d?.paddingR2Bottom ?? 0,
+      left: d?.paddingR2Left ?? 0,
+    };
+  };
+
+  const getFoldBasePosition = () => {
     const details = selectedLayout?.details;
     if (!details || details.cuttingType !== "loop" || !details.loopFoldOrientation) {
       return null;
     }
 
     const isVertical = details.loopFoldOrientation === "vertical";
-    const baseDistance = details.loopMidForm
+    const distanceMm = details.loopMidForm
       ? (isVertical ? widthMm : heightMm) / 2
       : details.loopFoldDistanceMm ?? (isVertical ? widthMm : heightMm) / 2;
 
-    const isBackFlipped = side === "back" && !!details.isBackFlipped;
-    const distance = isBackFlipped
-      ? (isVertical ? widthMm : heightMm) - baseDistance
-      : baseDistance;
-
     return {
       orientation: details.loopFoldOrientation,
+      distanceMm,
+    } as const;
+  };
+
+  const getFoldGuidePosition = (side: "front" | "back") => {
+    const details = selectedLayout?.details;
+    const fold = getFoldBasePosition();
+    if (!details || !fold) {
+      return null;
+    }
+
+    const isBackFlipped = side === "back" && !!details.isBackFlipped;
+    const isVertical = fold.orientation === "vertical";
+    const distance = isBackFlipped
+      ? (isVertical ? widthMm : heightMm) - fold.distanceMm
+      : fold.distanceMm;
+
+    return {
+      orientation: fold.orientation,
       distanceMm: distance,
     } as const;
   };
@@ -367,14 +393,107 @@ export default function SplitWorkspace() {
     return value;
   };
 
-  const getPaddingRect = (side: "front" | "back") => {
-    const p = getPadding(side);
+  const clampMm = (value: number, min: number, max: number) => Math.max(min, Math.min(value, max));
+
+  const getInsetPaddingRect = (
+    x: number,
+    y: number,
+    w: number,
+    h: number,
+    pad: PaddingBox
+  ): PaddingGuideRect | null => {
+    if (w <= 0 || h <= 0 || pad.left + pad.right >= w || pad.top + pad.bottom >= h) {
+      return null;
+    }
+
     return {
-      x: p.left,
-      y: p.top,
-      w: widthMm - p.left - p.right,
-      h: heightMm - p.top - p.bottom,
+      x: x + pad.left,
+      y: y + pad.top,
+      w: w - pad.left - pad.right,
+      h: h - pad.top - pad.bottom,
     };
+  };
+
+  const mirrorFoldPaddingRect = (
+    rect: PaddingGuideRect,
+    side: "front" | "back",
+    orientation: "vertical" | "horizontal"
+  ): PaddingGuideRect => {
+    const shouldMirror = side === "back" && !!selectedLayout?.details?.isBackFlipped;
+    if (!shouldMirror) {
+      return rect;
+    }
+
+    if (orientation === "vertical") {
+      return { ...rect, x: widthMm - rect.x - rect.w };
+    }
+
+    return {
+      ...rect,
+      x: widthMm - rect.x - rect.w,
+      y: heightMm - rect.y - rect.h,
+    };
+  };
+
+  const getPaddingGuideRects = (side: "front" | "back"): PaddingGuideRect[] => {
+    const fold = getFoldBasePosition();
+    if (!fold) {
+      const fullRect = getInsetPaddingRect(0, 0, widthMm, heightMm, getPadding(side));
+      return fullRect ? [fullRect] : [];
+    }
+
+    const r1Pad = padding;
+    const r2Pad = getFoldRegion2Padding();
+    const guides: PaddingGuideRect[] = [];
+
+    const pushGuide = (x: number, y: number, w: number, h: number, pad: PaddingBox) => {
+      const rect = getInsetPaddingRect(x, y, w, h, pad);
+      if (rect) {
+        guides.push(mirrorFoldPaddingRect(rect, side, fold.orientation));
+      }
+    };
+
+    if (fold.orientation === "vertical") {
+      const foldX = clampMm(fold.distanceMm, 0, widthMm);
+      pushGuide(0, 0, foldX, heightMm, r1Pad);
+      pushGuide(foldX, 0, widthMm - foldX, heightMm, r2Pad);
+    } else {
+      const foldY = clampMm(fold.distanceMm, 0, heightMm);
+      pushGuide(0, 0, widthMm, foldY, r1Pad);
+      pushGuide(0, foldY, widthMm, heightMm - foldY, r2Pad);
+    }
+
+    return guides;
+  };
+
+  const getBestPaddingGuideRect = (
+    x: number,
+    y: number,
+    w: number,
+    h: number,
+    side: "front" | "back"
+  ): PaddingGuideRect => {
+    const rects = getPaddingGuideRects(side);
+    if (rects.length === 0) {
+      return { x: 0, y: 0, w: widthMm, h: heightMm };
+    }
+
+    const cx = x + Math.max(1, w) / 2;
+    const cy = y + Math.max(1, h) / 2;
+    const containing = rects.find((pr) => cx >= pr.x && cx <= pr.x + pr.w && cy >= pr.y && cy <= pr.y + pr.h);
+    if (containing) {
+      return containing;
+    }
+
+    return rects.reduce((best, pr) => {
+      const bestX = clampMm(cx, best.x, best.x + best.w);
+      const bestY = clampMm(cy, best.y, best.y + best.h);
+      const currentX = clampMm(cx, pr.x, pr.x + pr.w);
+      const currentY = clampMm(cy, pr.y, pr.y + pr.h);
+      const bestDist = Math.hypot(cx - bestX, cy - bestY);
+      const currentDist = Math.hypot(cx - currentX, cy - currentY);
+      return currentDist < bestDist ? pr : best;
+    });
   };
 
   const getBezierConnectionPath = (sx: number, sy: number, tx: number, ty: number) => {
@@ -418,7 +537,7 @@ export default function SplitWorkspace() {
   };
 
   const constrainRect = (x: number, y: number, w: number, h: number, side: "front" | "back") => {
-    const pr = getPaddingRect(side);
+    const pr = getBestPaddingGuideRect(x, y, w, h, side);
     const nx = Math.max(pr.x, Math.min(x, pr.x + pr.w));
     const ny = Math.max(pr.y, Math.min(y, pr.y + pr.h));
     let nw = Math.max(1, w);
@@ -429,19 +548,17 @@ export default function SplitWorkspace() {
   };
 
   const isInsidePadding = (x: number, y: number, side: "front" | "back") => {
-    const pr = getPaddingRect(side);
-    return x >= pr.x && x <= pr.x + pr.w && y >= pr.y && y <= pr.y + pr.h;
+    return getPaddingGuideRects(side).some((pr) => x >= pr.x && x <= pr.x + pr.w && y >= pr.y && y <= pr.y + pr.h);
   };
 
   const getNearestPaddingCorner = (x: number, y: number, side: "front" | "back"): { x: number; y: number } | null => {
     const thresholdMm = 5 / scale;
-    const pr = getPaddingRect(side);
-    const corners = [
+    const corners = getPaddingGuideRects(side).flatMap((pr) => [
       { x: pr.x, y: pr.y },
       { x: pr.x + pr.w, y: pr.y },
       { x: pr.x, y: pr.y + pr.h },
       { x: pr.x + pr.w, y: pr.y + pr.h },
-    ];
+    ]);
     let best: { x: number; y: number } | null = null;
     let bestDist = Infinity;
     for (const c of corners) {
@@ -456,13 +573,12 @@ export default function SplitWorkspace() {
 
   const getNearestPaddingEdge = (x: number, y: number, side: "front" | "back"): { x: number; y: number } | null => {
     const thresholdMm = 5 / scale;
-    const pr = getPaddingRect(side);
-    const candidates = [
-      { x, y: pr.y },
-      { x, y: pr.y + pr.h },
-      { x: pr.x, y },
-      { x: pr.x + pr.w, y },
-    ];
+    const candidates = getPaddingGuideRects(side).flatMap((pr) => [
+      { x: clampMm(x, pr.x, pr.x + pr.w), y: pr.y },
+      { x: clampMm(x, pr.x, pr.x + pr.w), y: pr.y + pr.h },
+      { x: pr.x, y: clampMm(y, pr.y, pr.y + pr.h) },
+      { x: pr.x + pr.w, y: clampMm(y, pr.y, pr.y + pr.h) },
+    ]);
     let best: { x: number; y: number } | null = null;
     let bestDist = Infinity;
     for (const p of candidates) {
@@ -478,7 +594,6 @@ export default function SplitWorkspace() {
   const getNearestFoldGuide = (x: number, y: number, side: "front" | "back"): { x: number; y: number } | null => {
     const thresholdMm = 5 / scale;
     const foldGuide = getFoldGuide(side);
-    const pr = getPaddingRect(side);
 
     if (!foldGuide) {
       return null;
@@ -487,13 +602,13 @@ export default function SplitWorkspace() {
     const isVertical = Math.abs(foldGuide.x1 - foldGuide.x2) < 0.001;
     if (isVertical) {
       const foldX = pxToMm(foldGuide.x1);
-      const clampedY = Math.max(pr.y, Math.min(y, pr.y + pr.h));
+      const clampedY = clampMm(y, 0, heightMm);
       const dist = Math.abs(x - foldX);
       return dist <= thresholdMm ? { x: foldX, y: clampedY } : null;
     }
 
     const foldY = pxToMm(foldGuide.y1);
-    const clampedX = Math.max(pr.x, Math.min(x, pr.x + pr.w));
+    const clampedX = clampMm(x, 0, widthMm);
     const dist = Math.abs(y - foldY);
     return dist <= thresholdMm ? { x: clampedX, y: foldY } : null;
   };
@@ -501,10 +616,10 @@ export default function SplitWorkspace() {
   const snapToPadding = (x: number, y: number, side: "front" | "back"): DrawSnap => {
     const corner = getNearestPaddingCorner(x, y, side);
     if (corner) return { ...corner, kind: "corner" };
-    const foldGuide = getNearestFoldGuide(x, y, side);
-    if (foldGuide) return { ...foldGuide, kind: "edge" };
     const edge = getNearestPaddingEdge(x, y, side);
     if (edge) return { ...edge, kind: "edge" };
+    const foldGuide = getNearestFoldGuide(x, y, side);
+    if (foldGuide) return { ...foldGuide, kind: "edge" };
     return { x, y, kind: null };
   };
 
@@ -598,10 +713,14 @@ export default function SplitWorkspace() {
         snapTargetsX.push(r.x, r.x + r.widthMm, r.x - region.widthMm, r.x + r.widthMm - region.widthMm);
         snapTargetsY.push(r.y, r.y + r.heightMm, r.y - region.heightMm, r.y + r.heightMm - region.heightMm);
       }
+      for (const pr of getPaddingGuideRects(region.side)) {
+        snapTargetsX.push(pr.x, pr.x + pr.w, pr.x - region.widthMm, pr.x + pr.w - region.widthMm);
+        snapTargetsY.push(pr.y, pr.y + pr.h, pr.y - region.heightMm, pr.y + pr.h - region.heightMm);
+      }
       nx = snapValue(nx, snapTargetsX);
       ny = snapValue(ny, snapTargetsY);
-      // Keep the entire region inside the green dotted padding rectangle for this side
-      const pr = getPaddingRect(region.side);
+      // Keep the region inside the specific green dotted fold-panel box it is closest to.
+      const pr = getBestPaddingGuideRect(nx, ny, region.widthMm, region.heightMm, region.side);
       const maxMoveX = pr.x + pr.w - region.widthMm;
       const maxMoveY = pr.y + pr.h - region.heightMm;
       const cx = maxMoveX >= pr.x ? Math.max(pr.x, Math.min(nx, maxMoveX)) : pr.x;
@@ -642,6 +761,10 @@ export default function SplitWorkspace() {
       for (const r of config.regions.filter((r) => r.id !== region.id)) {
         snapTargetsX.push(r.x, r.x + r.widthMm);
         snapTargetsY.push(r.y, r.y + r.heightMm);
+      }
+      for (const pr of getPaddingGuideRects(region.side)) {
+        snapTargetsX.push(pr.x, pr.x + pr.w);
+        snapTargetsY.push(pr.y, pr.y + pr.h);
       }
 
       if (drag.handle.includes("w") || drag.handle.includes("e")) {
@@ -1604,6 +1727,7 @@ export default function SplitWorkspace() {
       const sidePadding = getPadding(side);
       const sideImage = parseSideImage(config.imageData, side);
       const foldGuide = getFoldGuide(side);
+      const paddingGuideRects = getPaddingGuideRects(side);
       return (
         <svg
           key={side}
@@ -1629,17 +1753,20 @@ export default function SplitWorkspace() {
               />
             )}
 
-            {/* Padding outline */}
-            <rect
-              x={mmToPx(sidePadding.left)}
-              y={mmToPx(sidePadding.top)}
-              width={mmToPx(widthMm - sidePadding.left - sidePadding.right)}
-              height={mmToPx(heightMm - sidePadding.top - sidePadding.bottom)}
-              fill="none"
-              stroke="#059669"
-              strokeWidth={1}
-              strokeDasharray="4,4"
-            />
+            {/* Padding outlines. Fold layouts show one guide per fold panel. */}
+            {paddingGuideRects.map((pr, idx) => (
+              <rect
+                key={`padding-${side}-${idx}`}
+                x={mmToPx(pr.x)}
+                y={mmToPx(pr.y)}
+                width={Math.max(0, mmToPx(pr.w))}
+                height={Math.max(0, mmToPx(pr.h))}
+                fill="none"
+                stroke="#059669"
+                strokeWidth={1}
+                strokeDasharray="4,4"
+              />
+            ))}
 
             {/* Overflow connection lines */}
             {showLines &&
@@ -2428,6 +2555,7 @@ export default function SplitWorkspace() {
                         <div className="flex flex-row gap-4">
                           {(["front", "back"] as const).map((side) => {
                             const sidePadding = getPadding(side);
+                            const paddingGuideRects = getPaddingGuideRects(side);
                             const displayLabel = `label ${idx + 1} ${side}`;
                             return (
                               <div key={side} className="space-y-1">
@@ -2452,16 +2580,19 @@ export default function SplitWorkspace() {
                                       />
                                     );
                                   })()}
-                                  <rect
-                                    x={mmToPx(sidePadding.left)}
-                                    y={mmToPx(sidePadding.top)}
-                                    width={Math.max(0, mmToPx(widthMm - sidePadding.left - sidePadding.right))}
-                                    height={Math.max(0, mmToPx(heightMm - sidePadding.top - sidePadding.bottom))}
-                                    fill="none"
-                                    stroke="#059669"
-                                    strokeWidth={1}
-                                    strokeDasharray="4,4"
-                                  />
+                                  {paddingGuideRects.map((pr, guideIdx) => (
+                                    <rect
+                                      key={`sim-padding-${side}-${guideIdx}`}
+                                      x={mmToPx(pr.x)}
+                                      y={mmToPx(pr.y)}
+                                      width={Math.max(0, mmToPx(pr.w))}
+                                      height={Math.max(0, mmToPx(pr.h))}
+                                      fill="none"
+                                      stroke="#059669"
+                                      strokeWidth={1}
+                                      strokeDasharray="4,4"
+                                    />
+                                  ))}
                                   {label[side].map((r) => (
                                     <g key={r.regionId}>
                                       <rect

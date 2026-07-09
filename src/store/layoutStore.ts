@@ -24,6 +24,7 @@ type LayoutStore = {
   data: LayoutData;
   isDirty: boolean;
   previewZoom: number;
+  previewPan: { x: number; y: number };
   savedLayouts: { id: string; name: string }[];
   viewPanel: ViewPanel;
   menuExpanded: Record<string, boolean>;
@@ -34,6 +35,7 @@ type LayoutStore = {
   setMenuExpanded: (key: string, expanded: boolean) => void;
   setSavedLayouts: (list: { id: string; name: string }[]) => void;
   setPreviewZoom: (zoom: number) => void;
+  setPreviewPan: (pan: { x: number; y: number }) => void;
 
   setMaterialId: (id: string) => void;
   setSideType: (t: SideType) => void;
@@ -75,6 +77,7 @@ export const useLayoutStore = create<LayoutStore>((set) => ({
   data: { ...initialData },
   isDirty: false,
   previewZoom: 1,
+  previewPan: { x: 0, y: 0 },
   savedLayouts: [],
   viewPanel: "layout-create",
   menuExpanded: {},
@@ -85,7 +88,12 @@ export const useLayoutStore = create<LayoutStore>((set) => ({
   setMenuExpanded: (key, expanded) =>
     set((s) => ({ menuExpanded: { ...s.menuExpanded, [key]: expanded } })),
   setSavedLayouts: (savedLayouts) => set({ savedLayouts }),
-  setPreviewZoom: (previewZoom) => set({ previewZoom }),
+  setPreviewZoom: (previewZoom) =>
+    set((s) => ({
+      previewZoom,
+      previewPan: previewZoom <= 1 ? { x: 0, y: 0 } : s.previewPan,
+    })),
+  setPreviewPan: (previewPan) => set({ previewPan }),
 
   setMaterialId: (materialId) =>
     set((s) => ({ data: { ...s.data, materialId }, isDirty: true })),
@@ -143,7 +151,14 @@ export const useLayoutStore = create<LayoutStore>((set) => ({
     set((s) => ({ data: { ...s.data, isBackFlipped }, isDirty: true })),
   setLayoutName: (name) =>
     set((s) => ({ data: { ...s.data, name }, isDirty: true })),
-  loadLayout: (data) => set({ data, isDirty: false, previewZoom: 1 }),
-  reset: () => set({ data: { ...initialData }, step: "material", isDirty: false, previewZoom: 1 }),
+  loadLayout: (data) => set({ data, isDirty: false, previewZoom: 1, previewPan: { x: 0, y: 0 } }),
+  reset: () =>
+    set({
+      data: { ...initialData },
+      step: "material",
+      isDirty: false,
+      previewZoom: 1,
+      previewPan: { x: 0, y: 0 },
+    }),
   markClean: () => set({ isDirty: false }),
 }));

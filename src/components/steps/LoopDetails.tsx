@@ -7,11 +7,9 @@ import { getDisplayedDimensions } from "@/lib/utils";
 
 export default function LoopDetails() {
   const data = useLayoutStore((s) => s.data);
-  const previewZoom = useLayoutStore((s) => s.previewZoom);
   const setFoldOrientation = useLayoutStore((s) => s.setLoopFoldOrientation);
   const setMidForm = useLayoutStore((s) => s.setLoopMidForm);
   const setFoldDistance = useLayoutStore((s) => s.setLoopFoldDistance);
-  const setPreviewZoom = useLayoutStore((s) => s.setPreviewZoom);
   const setStep = useLayoutStore((s) => s.setStep);
 
   const maxDistance =
@@ -120,8 +118,6 @@ export default function LoopDetails() {
               heightMm={data.heightMm}
               orientation={data.orientation}
               maxDisplayPx={300}
-              zoom={previewZoom}
-              onZoomChange={setPreviewZoom}
               foldOrientation={data.loopFoldOrientation}
               foldDistanceMm={data.loopFoldDistanceMm}
               foldMidForm={data.loopMidForm}

@@ -1,16 +1,20 @@
 "use client";
 
+import { useRef } from "react";
 import { useLayoutStore } from "@/store/layoutStore";
 import type { ViewMode } from "@/lib/types";
 import LabelCanvas from "../canvas/LabelCanvas";
 
 export default function FinalView() {
   const data = useLayoutStore((s) => s.data);
+  const previewPan = useLayoutStore((s) => s.previewPan);
   const previewZoom = useLayoutStore((s) => s.previewZoom);
   const setViewMode = useLayoutStore((s) => s.setViewMode);
   const setIsBackFlipped = useLayoutStore((s) => s.setIsBackFlipped);
+  const setPreviewPan = useLayoutStore((s) => s.setPreviewPan);
   const setPreviewZoom = useLayoutStore((s) => s.setPreviewZoom);
   const setStep = useLayoutStore((s) => s.setStep);
+  const dragRef = useRef<{ active: boolean; startX: number; startY: number; panX: number; panY: number } | null>(null);
 
   const isLoop = data.cuttingType === "loop";
 
@@ -23,6 +27,40 @@ export default function FinalView() {
     data.viewMode === "side-by-side"
       ? "flex flex-col sm:flex-row gap-6 items-start justify-center"
       : "flex flex-col gap-6 items-center";
+
+  const handleStageMouseDown = (e: React.MouseEvent) => {
+    if (previewZoom <= 1) return;
+    dragRef.current = {
+      active: true,
+      startX: e.clientX,
+      startY: e.clientY,
+      panX: previewPan.x,
+      panY: previewPan.y,
+    };
+  };
+
+  const handleStageMouseMove = (e: React.MouseEvent) => {
+    if (!dragRef.current?.active) return;
+    const dx = e.clientX - dragRef.current.startX;
+    const dy = e.clientY - dragRef.current.startY;
+    setPreviewPan({ x: dragRef.current.panX + dx, y: dragRef.current.panY + dy });
+  };
+
+  const handleStageMouseUp = () => {
+    if (dragRef.current) {
+      dragRef.current.active = false;
+    }
+  };
+
+  const handleStageWheel = (e: React.WheelEvent) => {
+    e.preventDefault();
+    const delta = e.deltaY < 0 ? 0.15 : -0.15;
+    const nextZoom = Math.max(0.5, Math.min(4, previewZoom + delta));
+    setPreviewZoom(nextZoom);
+    if (nextZoom <= 1) {
+      setPreviewPan({ x: 0, y: 0 });
+    }
+  };
 
   return (
     <div className="space-y-6">
@@ -49,7 +87,7 @@ export default function FinalView() {
         </div>
       </div>
 
-      <div className={`relative bg-white border border-[var(--border)] rounded-xl p-6 shadow-[var(--shadow-sm)] ${containerClass}`}>
+      <div className="relative bg-white border border-[var(--border)] rounded-xl p-6 shadow-[var(--shadow-sm)]">
         <button
           onClick={() => setIsBackFlipped(!data.isBackFlipped)}
           className="absolute top-0 right-0 z-10 p-2 rounded-bl-lg border-b border-l border-[var(--border)] bg-[var(--muted)] text-[var(--foreground)]/70 hover:text-[var(--primary)] hover:border-[var(--primary)]/40 transition-all duration-200 cursor-pointer"
@@ -60,46 +98,59 @@ export default function FinalView() {
             <path strokeLinecap="round" strokeLinejoin="round" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
           </svg>
         </button>
-        <div className="flex flex-col items-center">
-          <span className="text-[11px] font-bold uppercase tracking-wider text-[var(--foreground)]/40 mb-2">Front</span>
-          <LabelCanvas
-            widthMm={data.widthMm}
-            heightMm={data.heightMm}
-            orientation={data.orientation}
-            maxDisplayPx={isLoop ? 220 : 300}
-            zoom={previewZoom}
-            onZoomChange={setPreviewZoom}
-            foldOrientation={data.loopFoldOrientation}
-            foldDistanceMm={data.loopFoldDistanceMm}
-            foldMidForm={data.loopMidForm}
-            showFold={isLoop}
-            padding={data.padding}
-            paddingRegion2={data.paddingRegion2}
-            showPadding
-            showDimensions
-            isFront
-          />
-        </div>
-        <div className="flex flex-col items-center">
-          <span className="text-[11px] font-bold uppercase tracking-wider text-[var(--foreground)]/40 mb-2">Back</span>
-          <LabelCanvas
-            widthMm={data.widthMm}
-            heightMm={data.heightMm}
-            orientation={data.orientation}
-            maxDisplayPx={isLoop ? 220 : 300}
-            zoom={previewZoom}
-            onZoomChange={setPreviewZoom}
-            foldOrientation={data.loopFoldOrientation}
-            foldDistanceMm={data.loopFoldDistanceMm}
-            foldMidForm={data.loopMidForm}
-            showFold={isLoop}
-            padding={data.padding}
-            paddingRegion2={data.paddingRegion2}
-            showPadding
-            showDimensions
-            isFront={false}
-            flipped={data.isBackFlipped}
-          />
+        <div
+          className={`overflow-hidden min-h-[260px] ${previewZoom > 1 ? "cursor-grab active:cursor-grabbing" : ""}`}
+          onMouseDown={handleStageMouseDown}
+          onMouseMove={handleStageMouseMove}
+          onMouseUp={handleStageMouseUp}
+          onMouseLeave={handleStageMouseUp}
+          onWheel={handleStageWheel}
+        >
+          <div
+            className={containerClass}
+            style={{
+              transform: `translate(${previewPan.x}px, ${previewPan.y}px) scale(${previewZoom})`,
+              transformOrigin: "top left",
+            }}
+          >
+            <div className="flex flex-col items-center">
+              <span className="text-[11px] font-bold uppercase tracking-wider text-[var(--foreground)]/40 mb-2">Front</span>
+              <LabelCanvas
+                widthMm={data.widthMm}
+                heightMm={data.heightMm}
+                orientation={data.orientation}
+                maxDisplayPx={isLoop ? 220 : 300}
+                foldOrientation={data.loopFoldOrientation}
+                foldDistanceMm={data.loopFoldDistanceMm}
+                foldMidForm={data.loopMidForm}
+                showFold={isLoop}
+                padding={data.padding}
+                paddingRegion2={data.paddingRegion2}
+                showPadding
+                showDimensions
+                isFront
+              />
+            </div>
+            <div className="flex flex-col items-center">
+              <span className="text-[11px] font-bold uppercase tracking-wider text-[var(--foreground)]/40 mb-2">Back</span>
+              <LabelCanvas
+                widthMm={data.widthMm}
+                heightMm={data.heightMm}
+                orientation={data.orientation}
+                maxDisplayPx={isLoop ? 220 : 300}
+                foldOrientation={data.loopFoldOrientation}
+                foldDistanceMm={data.loopFoldDistanceMm}
+                foldMidForm={data.loopMidForm}
+                showFold={isLoop}
+                padding={data.padding}
+                paddingRegion2={data.paddingRegion2}
+                showPadding
+                showDimensions
+                isFront={false}
+                flipped={data.isBackFlipped}
+              />
+            </div>
+          </div>
         </div>
       </div>
 

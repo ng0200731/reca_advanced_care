@@ -36,12 +36,10 @@ function PaddingInputs({
 
 export default function PaddingConfig() {
   const data = useLayoutStore((s) => s.data);
-  const previewZoom = useLayoutStore((s) => s.previewZoom);
   const setPaddingOption = useLayoutStore((s) => s.setPaddingOption);
   const setPadding = useLayoutStore((s) => s.setPadding);
   const setPaddingRegion2 = useLayoutStore((s) => s.setPaddingRegion2);
   const setPaddingSyncRegions = useLayoutStore((s) => s.setPaddingSyncRegions);
-  const setPreviewZoom = useLayoutStore((s) => s.setPreviewZoom);
   const setStep = useLayoutStore((s) => s.setStep);
 
   const isLoop = data.cuttingType === "loop";
@@ -173,8 +171,6 @@ export default function PaddingConfig() {
             heightMm={data.heightMm}
             orientation={data.orientation}
             maxDisplayPx={300}
-            zoom={previewZoom}
-            onZoomChange={setPreviewZoom}
             foldOrientation={data.loopFoldOrientation}
             foldDistanceMm={data.loopFoldDistanceMm}
             foldMidForm={data.loopMidForm}
